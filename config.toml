@@ -1,0 +1,7 @@
+# These must be directories
+paths = [
+    "$HOME/personal",
+    "~/.config",
+    "$HOME/opt/",
+    "$HOME/work/*"
+]
