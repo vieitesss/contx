@@ -22,10 +22,12 @@ fn normalize_path(path: &str) -> String {
 }
 
 impl SessionsList {
-    pub fn with_paths(self, paths: &[&str]) -> Self {
+    pub fn new(paths: &[&str], selected: Option<usize>) -> Self {
+        let state = ListState::default().with_selected(selected);
+
         Self {
             paths: normalize_paths(paths),
-            ..self
+            state: state,
         }
     }
 
