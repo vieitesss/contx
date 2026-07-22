@@ -37,7 +37,7 @@ impl From<toml::de::Error> for ConfigError {
     }
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Default, Deserialize)]
 pub struct Config {
     pub paths: Vec<String>,
 }
