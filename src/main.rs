@@ -4,7 +4,6 @@ mod tmux;
 mod tui;
 
 use env_logger::{Builder, Target};
-use log::error;
 use std::fs::OpenOptions;
 use std::io;
 use std::process::exit;
@@ -27,7 +26,7 @@ fn main() -> io::Result<()> {
             ratatui::run(|terminal| Tui::new(c).run(terminal))?;
         }
         Err(e) => {
-            error!("{e}");
+            eprintln!("{e}");
             exit(1);
         }
     }

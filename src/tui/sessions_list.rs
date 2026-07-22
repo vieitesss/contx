@@ -1,11 +1,10 @@
-use std::io;
-
 use ratatui::{
     buffer::Buffer,
     crossterm::event::KeyCode,
     layout::Rect,
     widgets::{Block, List, ListState, StatefulWidget, Widget},
 };
+use std::io;
 
 #[derive(Default, Debug, Clone)]
 pub struct SessionsList {
@@ -13,20 +12,13 @@ pub struct SessionsList {
     state: ListState,
 }
 
-pub fn normalize_paths(paths: &[&str]) -> Vec<String> {
-    paths.iter().map(|p| normalize_path(p)).collect()
-}
-
-fn normalize_path(path: &str) -> String {
-    String::from(path)
-}
-
 impl SessionsList {
     pub fn new(paths: &[&str], selected: Option<usize>) -> Self {
         let state = ListState::default().with_selected(selected);
+        let ps = paths.iter().map(|p| p.to_string()).collect();
 
         Self {
-            paths: normalize_paths(paths),
+            paths: ps,
             state: state,
         }
     }

@@ -1,7 +1,28 @@
-# These must be directories
+# Parent directories of the entries that will appear as options.
+#
+# With this tree:
+# ~/
+#  ├─ dir/
+#  ├─ another/
+#  │  ├ nested/
+#  │  └ again/
+#  └─ example.txt
+# 
+# The entries "$HOME", "$HOME/", "~" and "~" show:
+#  - /home/<user>/dir
+#  - /home/<user>/another
+#
+# The entries "~/another" and "~/another/" show:
+#  - /home/<user>/another/nested
+#  - /home/<user>/another/again
+#
+# The entry "~/*" show:
+#  - /home/<user>/another/nested
+#  - /home/<user>/another/again
+
 paths = [
-    "$HOME/personal",
-    "~/.config",
-    "$HOME/opt/",
-    "$HOME/work/*"
+    # "$HOME/personal",
+    # "~/.config",
+    # "$HOME/opt/",
+    "$HOME/work/*",
 ]

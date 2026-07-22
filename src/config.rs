@@ -1,12 +1,18 @@
 use serde::Deserialize;
+use shellexpand;
 use std::error;
 use std::fmt;
 use std::fs;
+use std::path::Path;
 
 #[derive(Debug)]
 pub enum ConfigError {
     FileMissing(std::io::Error, String),
     IncorrectStructure(toml::de::Error),
+    PathHasInvalidEnv(std::env::VarError, String, String),
+    PathIsNotAbsolute(String),
+    PathIsNotDirectory(String),
+    PathIsNotValid(String),
 }
 
 impl error::Error for ConfigError {
@@ -14,6 +20,10 @@ impl error::Error for ConfigError {
         match self {
             ConfigError::FileMissing(e, _) => Some(e),
             ConfigError::IncorrectStructure(e) => Some(e),
+            ConfigError::PathHasInvalidEnv(e, _, _) => Some(e),
+            ConfigError::PathIsNotAbsolute(_) => None,
+            ConfigError::PathIsNotDirectory(_) => None,
+            ConfigError::PathIsNotValid(_) => None,
         }
     }
 }
@@ -24,22 +34,83 @@ impl fmt::Display for ConfigError {
             ConfigError::FileMissing(e, path) => {
                 write!(f, "{e}; {path}")
             }
+            ConfigError::PathIsNotAbsolute(path) => {
+                write!(f, "not an absolute path: `{path}`")
+            }
+            ConfigError::PathIsNotDirectory(path) => {
+                write!(f, "not a directory: `{path}`")
+            }
+            ConfigError::PathIsNotValid(path) => {
+                write!(f, "not a valid path: `{path}`; TODO: refer to help")
+            }
             ConfigError::IncorrectStructure(e) => {
                 write!(f, "{e}")
             }
+            ConfigError::PathHasInvalidEnv(e, env, path) => {
+                write!(f, "{e}; `{env}` in `{path}`")
+            }
         }
-    }
-}
-
-impl From<toml::de::Error> for ConfigError {
-    fn from(error: toml::de::Error) -> Self {
-        ConfigError::IncorrectStructure(error)
     }
 }
 
 #[derive(Default, Deserialize)]
 pub struct Config {
     pub paths: Vec<String>,
+}
+
+fn is_directory(path: &str) -> bool {
+    Path::new(path).is_dir()
+}
+
+fn inner_dirs(dir: &str) -> Vec<String> {
+    Path::new(dir)
+        .read_dir()
+        .expect("read_dir call failed")
+        .filter_map(Result::ok)
+        .map(|e| e.path().display().to_string())
+        .collect()
+}
+
+fn normalize_path(path: &str) -> Result<Vec<String>, ConfigError> {
+    let p: String = match shellexpand::full(path) {
+        Ok(o) => o.as_ref().to_owned(),
+        Err(e) => {
+            return Err(ConfigError::PathHasInvalidEnv(
+                e.cause,
+                e.var_name,
+                path.to_string(),
+            ));
+        }
+    };
+
+    if !p.starts_with('/') {
+        return Err(ConfigError::PathIsNotAbsolute(path.to_string()));
+    }
+
+    if is_directory(&p) {
+        return Ok(inner_dirs(&p));
+    }
+
+    if p.ends_with("/*") {
+        let dir = p.get(..(p.len() - 2)).unwrap();
+        if !is_directory(&dir) {
+            return Err(ConfigError::PathIsNotDirectory(path.to_string()));
+        }
+        let all: Vec<String> =
+            inner_dirs(dir).iter().flat_map(|d| inner_dirs(d)).collect();
+
+        return Ok(all);
+    }
+
+    Err(ConfigError::PathIsNotValid(path.to_string()))
+}
+
+fn normalize_paths(paths: &[&str]) -> Result<Vec<String>, ConfigError> {
+    let mut ps = vec![];
+    for p in paths.iter() {
+        ps.append(&mut normalize_path(p)?);
+    }
+    Ok(ps)
 }
 
 pub fn parse(config_path: &str) -> Result<Config, ConfigError> {
@@ -51,7 +122,13 @@ pub fn parse(config_path: &str) -> Result<Config, ConfigError> {
     let content = res.unwrap();
 
     match toml::from_str::<Config>(&content) {
-        Ok(content) => Ok(content),
-        Err(e) => Err(ConfigError::IncorrectStructure(e)),
+        Ok(config) => {
+            let paths: Vec<&str> =
+                config.paths.iter().map(String::as_str).collect();
+            let norm_paths = normalize_paths(&paths)?;
+
+            Ok(Config { paths: norm_paths })
+        }
+        Err(e) => return Err(ConfigError::IncorrectStructure(e)),
     }
 }
