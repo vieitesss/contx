@@ -1,11 +1,12 @@
+mod debug_pane;
 mod sessions_list;
 
 use crate::{config::Config, globals};
+use debug_pane::DebugPane;
 use ratatui::{
     DefaultTerminal, Frame,
     crossterm::event::{self, Event, KeyCode, KeyEventKind},
     layout::{Constraint, Direction, Layout},
-    widgets::Paragraph,
 };
 use sessions_list::SessionsList;
 use std::env;
@@ -19,22 +20,22 @@ enum Focus {
 
 #[derive(Default)]
 pub struct Tui {
-    c: Config,
     exit: bool,
     sessions: SessionsList,
+    debug_pane: DebugPane,
     focus: Focus,
 }
 
 impl Tui {
     pub fn new(c: Config) -> Self {
         let paths: Vec<&str> = c.paths.iter().map(String::as_str).collect();
-        let sl = SessionsList::default().with_paths(&paths);
+        let selected: Option<usize> = Some(0);
 
         Tui {
-            c: c,
             exit: false,
-            sessions: sl,
+            sessions: SessionsList::new(&paths, selected),
             focus: Focus::default(),
+            debug_pane: DebugPane::new(globals::LOG_FILE),
         }
     }
 
@@ -97,14 +98,7 @@ impl Tui {
         frame.render_widget(&mut self.sessions, areas[0]);
 
         if env::var("TUI_DEBUG").is_ok() {
-            let logs = match std::fs::read_to_string(globals::LOG_FILE) {
-                Ok(content) => content,
-                Err(e) => format!("{e}"),
-            };
-            let lines = logs.split("\n").count();
-            let vert_scroll = lines as u16 - areas[1].height;
-            let debug = Paragraph::new(logs).scroll((vert_scroll, 0));
-            frame.render_widget(debug, areas[1]);
+            frame.render_widget(&self.debug_pane, areas[1]);
         }
     }
 }
