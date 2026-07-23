@@ -1,10 +1,12 @@
+use std::io;
+
 use ratatui::{
     buffer::Buffer,
-    crossterm::event::KeyCode,
+    crossterm::event::{self, Event, KeyCode, KeyEventKind},
     layout::Rect,
-    widgets::{Block, List, ListState, StatefulWidget, Widget},
+    widgets::{Block, List, ListState, StatefulWidget},
 };
-use std::io;
+use super::message::Message;
 
 #[derive(Default, Debug, Clone)]
 pub struct SessionsList {
@@ -23,18 +25,21 @@ impl SessionsList {
         }
     }
 
-    pub fn handle_events(&mut self, keycode: KeyCode) -> io::Result<()> {
-        match keycode {
-            KeyCode::Char('j') => self.state.select_next(),
-            KeyCode::Char('k') => self.state.select_previous(),
-            _ => {}
+    pub fn handle_events(&mut self) -> Result<Message, io::Error> {
+        if let Event::Key(key) = event::read()? {
+            if key.kind == KeyEventKind::Press {
+                match key.code {
+                    KeyCode::Char('q') => return Ok(Message::Exit),
+                    KeyCode::Char('j') => self.state.select_next(),
+                    KeyCode::Char('k') => self.state.select_previous(),
+                    _ => {}
+                }
+            }
         }
-        Ok(())
+        Ok(Message::NAM)
     }
-}
 
-impl Widget for &mut SessionsList {
-    fn render(self, area: Rect, buf: &mut Buffer) {
+    pub fn render(&mut self, area: Rect, buf: &mut Buffer) {
         let list = List::new(self.paths.iter().map(String::as_str))
             .block(Block::bordered())
             .highlight_symbol("");
