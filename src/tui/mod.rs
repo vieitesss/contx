@@ -1,7 +1,8 @@
 mod component;
 mod debug_pane;
 mod message;
-pub mod sessions_list;
+mod search;
+mod sessions_list;
 
 use crate::{config::Config, globals};
 use component::{Component, ComponentKind};
@@ -11,6 +12,7 @@ use ratatui::{
     DefaultTerminal, Frame,
     layout::{Constraint, Direction, Layout},
 };
+use search::Search;
 use sessions_list::SessionsList;
 use std::env;
 use std::io;
@@ -30,6 +32,7 @@ impl Tui {
         Tui {
             exit: false,
             components: vec![
+                Component::Search(Search::default()),
                 Component::Sessions(SessionsList::new(&paths, selected)),
                 Component::Debug(DebugPane::new(globals::LOG_FILE)),
             ],
@@ -37,12 +40,16 @@ impl Tui {
         }
     }
 
-    pub fn run(&mut self, terminal: &mut DefaultTerminal) -> io::Result<()> {
-        while !self.exit {
-            terminal.draw(|frame| self.draw(frame))?;
-            self.handle_events()?;
+    fn handle_events(&mut self) -> io::Result<()> {
+        if let Some(c) = self.focused_mut() {
+            match c.handle_events()? {
+                Message::Exit => self.exit(),
+                _ => {}
+            };
+            Ok(())
+        } else {
+            panic!("there should be a component here");
         }
-        Ok(())
     }
 
     fn find_mut(&mut self, kind: ComponentKind) -> Option<&mut Component> {
@@ -58,32 +65,18 @@ impl Tui {
         self.exit = true;
     }
 
-    fn handle_events(&mut self) -> io::Result<()> {
-        if let Some(c) = self.focused_mut() {
-            match c.handle_events()? {
-                Message::Exit => self.exit(),
-                _ => {}
-            };
-            Ok(())
-        } else {
-            panic!("there should be a component here");
-        }
-    }
-
-    fn draw(&mut self, frame: &mut Frame) {
-        // ┏━━━━━━━┓
-        // ┃ list  ┃
-        // ┃       ┃
+    fn render(&mut self, frame: &mut Frame) {
+        // ━search━━
+        // ┏list━━━┓
         // ┃       ┃
         // ┃       ┃
         // ┗━━━━━━━┛
-        // ┏━━━━━━━┓
-        // ┃ debug ┃
+        // ┏debug━━┓
         // ┗━━━━━━━┛
 
-        let mut constraints = vec![Constraint::Fill(1)];
+        let mut constraints = vec![Constraint::Length(1), Constraint::Fill(1)];
         if env::var("TUI_DEBUG").is_ok() {
-            constraints = vec![Constraint::Fill(1), Constraint::Max(10)];
+            constraints.push(Constraint::Max(10));
         }
 
         let areas = Layout::default()
@@ -91,10 +84,18 @@ impl Tui {
             .constraints(constraints)
             .split(frame.area());
 
-        frame.render_widget(self.find_mut(ComponentKind::Sessions), areas[0]);
-
+        frame.render_widget(self.find_mut(ComponentKind::Search), areas[0]);
+        frame.render_widget(self.find_mut(ComponentKind::Sessions), areas[1]);
         if env::var("TUI_DEBUG").is_ok() {
-            frame.render_widget(self.find_mut(ComponentKind::Debug), areas[1]);
+            frame.render_widget(self.find_mut(ComponentKind::Debug), areas[2]);
         }
+    }
+
+    pub fn run(&mut self, terminal: &mut DefaultTerminal) -> io::Result<()> {
+        while !self.exit {
+            terminal.draw(|frame| self.render(frame))?;
+            self.handle_events()?;
+        }
+        Ok(())
     }
 }
