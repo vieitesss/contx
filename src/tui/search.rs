@@ -24,7 +24,7 @@ impl Search {
         }
     }
 
-    pub fn handle_events(&mut self) -> Result<Message, io::Error> {
+    pub fn handle_events(&mut self) -> Result<Option<Message>, io::Error> {
         if let Event::Key(key) = event::read()? {
             if key.kind == KeyEventKind::Press {
                 match key.modifiers {
@@ -32,31 +32,36 @@ impl Search {
                         if key.code == KeyCode::Backspace {
                             self.remove_word();
                         }
-                        return Ok(Message::NAM);
+                        return Ok(None);
                     }
                     KeyModifiers::CONTROL => {
                         if key.code == KeyCode::Char('w') {
                             self.remove_word();
-                            return Ok(Message::NAM);
+                            return Ok(None);
                         } else if key.code == KeyCode::Char('c') {
-                            return Ok(Message::Exit);
+                            return Ok(Some(Message::Exit));
                         }
                     }
                     _ => {}
                 }
                 match key.code {
-                    KeyCode::Char(c) => self.text.push(c),
+                    KeyCode::Char(c) => {
+                        self.text.push(c);
+                    }
                     KeyCode::Backspace => {
                         let _ = self.text.pop();
                     }
                     _ => {}
                 }
+                return Ok(Some(Message::FilterSessions(self.text.clone())));
             }
         }
-        Ok(Message::NAM)
+        Ok(None)
     }
+}
 
-    pub fn render(&mut self, area: Rect, buf: &mut Buffer) {
+impl Widget for &Search {
+    fn render(self, area: Rect, buf: &mut Buffer) {
         Line::from(vec![
             Span::styled("> ", ARROW_STYLE),
             Span::from(&self.text),

@@ -1,49 +1,78 @@
-use std::io;
-
+use super::message::Message;
 use ratatui::{
     buffer::Buffer,
     crossterm::event::{self, Event, KeyCode, KeyEventKind},
     layout::Rect,
-    widgets::{Block, List, ListState, StatefulWidget},
+    text::Line,
+    widgets::{Block, Paragraph, Widget},
 };
-use super::message::Message;
+use std::io;
 
 #[derive(Default, Debug, Clone)]
 pub struct SessionsList {
     pub paths: Vec<String>,
-    state: ListState,
+    filtered_indices: Vec<usize>,
+    filter: String,
 }
 
 impl SessionsList {
-    pub fn new(paths: &[&str], selected: Option<usize>) -> Self {
-        let state = ListState::default().with_selected(selected);
-        let ps = paths.iter().map(|p| p.to_string()).collect();
-
+    pub fn new(paths: &[&str]) -> Self {
+        let ps: Vec<String> = paths.iter().map(|p| p.to_string()).collect();
         Self {
             paths: ps,
-            state: state,
+            filtered_indices: vec![],
+            filter: String::new(),
         }
     }
 
-    pub fn handle_events(&mut self) -> Result<Message, io::Error> {
+    pub fn handle_message(&mut self, m: Message) -> Option<Message> {
+        match m {
+            Message::FilterSessions(s) => self.filter(&s),
+            _ => {}
+        };
+        None
+    }
+
+    pub fn handle_events(&mut self) -> Result<Option<Message>, io::Error> {
         if let Event::Key(key) = event::read()? {
             if key.kind == KeyEventKind::Press {
                 match key.code {
-                    KeyCode::Char('q') => return Ok(Message::Exit),
-                    KeyCode::Char('j') => self.state.select_next(),
-                    KeyCode::Char('k') => self.state.select_previous(),
+                    KeyCode::Char('q') => return Ok(Some(Message::Exit)),
                     _ => {}
                 }
             }
         }
-        Ok(Message::NAM)
+        Ok(None)
     }
 
-    pub fn render(&mut self, area: Rect, buf: &mut Buffer) {
-        let list = List::new(self.paths.iter().map(String::as_str))
-            .block(Block::bordered())
-            .highlight_symbol("");
+    fn filter(&mut self, s: &str) {
+        self.filtered_indices = self
+            .paths
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p.contains(s))
+            .map(|(i, _)| i)
+            .collect()
+    }
 
-        StatefulWidget::render(list, area, buf, &mut self.state);
+    fn format_line<'a>(&self, line: &'a str) -> Line<'a> {
+        Line::from(line)
+    }
+}
+
+impl Widget for &SessionsList {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        let lines: Vec<Line> = if self.filtered_indices.len() > 0 {
+            self.filtered_indices
+                .iter()
+                .map(|&i| self.format_line(&self.paths[i]))
+                .collect()
+        } else {
+            self.paths.iter().map(|p| self.format_line(p)).collect()
+        };
+
+        Paragraph::new(lines)
+            .block(Block::bordered())
+            .render(area, buf);
     }
 }

@@ -1,11 +1,9 @@
-mod component;
 mod debug_pane;
 mod message;
 mod search;
 mod sessions_list;
 
 use crate::{config::Config, globals};
-use component::{Component, ComponentKind};
 use debug_pane::DebugPane;
 use message::Message;
 use ratatui::{
@@ -18,47 +16,58 @@ use std::env;
 use std::io;
 
 #[derive(Default)]
+enum Focus {
+    SessionsList,
+    DebugPane,
+    #[default]
+    Search,
+}
+
+#[derive(Default)]
 pub struct Tui {
     exit: bool,
-    components: Vec<Component>,
-    focused: ComponentKind,
+    sessions_list: SessionsList,
+    debug_pane: DebugPane,
+    search: Search,
+    focused: Focus,
 }
 
 impl Tui {
     pub fn new(c: Config) -> Self {
         let paths: Vec<&str> = c.paths.iter().map(String::as_str).collect();
-        let selected: Option<usize> = Some(0);
 
         Tui {
             exit: false,
-            components: vec![
-                Component::Search(Search::default()),
-                Component::Sessions(SessionsList::new(&paths, selected)),
-                Component::Debug(DebugPane::new(globals::LOG_FILE)),
-            ],
-            focused: ComponentKind::default(),
+            search: Search::default(),
+            sessions_list: SessionsList::new(&paths),
+            debug_pane: DebugPane::new(globals::LOG_FILE),
+            focused: Focus::default(),
         }
     }
 
     fn handle_events(&mut self) -> io::Result<()> {
-        if let Some(c) = self.focused_mut() {
-            match c.handle_events()? {
-                Message::Exit => self.exit(),
-                _ => {}
-            };
-            Ok(())
-        } else {
-            panic!("there should be a component here");
+        let mes: Option<Message> = match self.focused {
+            Focus::SessionsList => self.sessions_list.handle_events()?,
+            Focus::Search => self.search.handle_events()?,
+            Focus::DebugPane => None,
+        };
+        if mes.is_some() {
+            self.handle_message(mes.unwrap())
         }
+        Ok(())
     }
 
-    fn find_mut(&mut self, kind: ComponentKind) -> Option<&mut Component> {
-        self.components.iter_mut().find(|c| c.kind() == kind)
-    }
-
-    pub fn focused_mut(&mut self) -> Option<&mut Component> {
-        let focused = self.focused;
-        self.find_mut(focused)
+    fn handle_message(&mut self, m: Message) {
+        let next = match m {
+            Message::Exit => {
+                self.exit();
+                return;
+            }
+            Message::FilterSessions(_) => self.sessions_list.handle_message(m),
+        };
+        if next.is_some() {
+            self.handle_message(next.unwrap());
+        }
     }
 
     fn exit(&mut self) {
@@ -84,10 +93,10 @@ impl Tui {
             .constraints(constraints)
             .split(frame.area());
 
-        frame.render_widget(self.find_mut(ComponentKind::Search), areas[0]);
-        frame.render_widget(self.find_mut(ComponentKind::Sessions), areas[1]);
+        frame.render_widget(&self.search, areas[0]);
+        frame.render_widget(&self.sessions_list, areas[1]);
         if env::var("TUI_DEBUG").is_ok() {
-            frame.render_widget(self.find_mut(ComponentKind::Debug), areas[2]);
+            frame.render_widget(&self.debug_pane, areas[2]);
         }
     }
 

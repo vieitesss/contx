@@ -15,8 +15,10 @@ impl DebugPane {
             log_file: log_file.to_string(),
         }
     }
+}
 
-    pub fn render(&mut self, area: Rect, buf: &mut Buffer) {
+impl Widget for &DebugPane {
+    fn render(self, area: Rect, buf: &mut Buffer) {
         let logs = match std::fs::read_to_string(&self.log_file) {
             Ok(content) => content,
             Err(e) => format!("{e}"),

@@ -1,4 +1,4 @@
 pub enum Message {
-    NAM,
     Exit,
+    FilterSessions(String),
 }

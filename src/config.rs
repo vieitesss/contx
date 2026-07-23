@@ -67,6 +67,7 @@ fn inner_dirs(dir: &str) -> Vec<String> {
         .read_dir()
         .expect("read_dir call failed")
         .filter_map(Result::ok)
+        .filter(|e| e.path().is_dir())
         .map(|e| e.path().display().to_string())
         .collect()
 }
