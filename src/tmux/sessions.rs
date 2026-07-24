@@ -1,5 +1,4 @@
 #[allow(unused)]
-
 #[derive(Debug)]
 pub struct TmuxSession {
     pub name: String,

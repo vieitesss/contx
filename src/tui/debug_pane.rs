@@ -24,7 +24,7 @@ impl Widget for &DebugPane {
             Err(e) => format!("{e}"),
         };
         let lines = logs.split("\n").count();
-        let vert_scroll = lines as u16 - area.height;
+        let vert_scroll = (lines as u16).saturating_sub(area.height);
         Paragraph::new(logs)
             .scroll((vert_scroll, 0))
             .render(area, buf);

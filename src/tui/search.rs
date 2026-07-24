@@ -24,6 +24,10 @@ impl Search {
         }
     }
 
+    fn send_filter(&self) -> Option<Message> {
+        Some(Message::FilterSessions(self.text.clone()))
+    }
+
     pub fn handle_events(&mut self) -> Result<Option<Message>, io::Error> {
         if let Event::Key(key) = event::read()? {
             if key.kind == KeyEventKind::Press {
@@ -31,13 +35,14 @@ impl Search {
                     KeyModifiers::ALT => {
                         if key.code == KeyCode::Backspace {
                             self.remove_word();
+                            return Ok(self.send_filter());
                         }
                         return Ok(None);
                     }
                     KeyModifiers::CONTROL => {
                         if key.code == KeyCode::Char('w') {
                             self.remove_word();
-                            return Ok(None);
+                            return Ok(self.send_filter());
                         } else if key.code == KeyCode::Char('c') {
                             return Ok(Some(Message::Exit));
                         }
@@ -53,7 +58,7 @@ impl Search {
                     }
                     _ => {}
                 }
-                return Ok(Some(Message::FilterSessions(self.text.clone())));
+                return Ok(self.send_filter());
             }
         }
         Ok(None)
