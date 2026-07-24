@@ -3,7 +3,7 @@ mod message;
 mod search;
 mod sessions_list;
 
-use crate::{config::Config, globals};
+use crate::config::Config;
 use debug_pane::DebugPane;
 use message::Message;
 use ratatui::{
@@ -40,7 +40,7 @@ impl Tui {
             exit: false,
             search: Search::default(),
             sessions_list: SessionsList::new(&paths),
-            debug_pane: DebugPane::new(globals::LOG_FILE),
+            debug_pane: DebugPane::new(crate::LOG_FILE),
             focused: Focus::default(),
         }
     }
