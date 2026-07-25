@@ -1,5 +1,3 @@
-use log::debug;
-
 #[derive(Default, Debug, Clone, PartialEq)]
 pub struct Match {
     pub entry: String,
@@ -60,29 +58,16 @@ fn find_indexes(entry: &str, query: &str) -> Option<Match> {
     let final_end;
     if let Some(e) = end {
         final_end = e;
-        // indexes.push(e);
-        // return Some(Match {
-        //     entry: entry.to_string(),
-        //     match_indexes: indexes,
-        // });
     } else {
         return None;
     }
 
-    // Barckwards: looking for the final matches.
+    // Backwards: setting the matches.
 
-    // ze
-    //  ^
-    //
-    // hello/zero
-    //        ^
-    // ez
-    //  ^
-    //
-    // hello/zero
-    //       ^
-    //
-    // [e]
+    // Char index -> byte offset, since `indexes` must be byte offsets
+    // (consumers slice `entry` with them), but the scan below walks chars.
+    let byte_offsets: Vec<usize> =
+        entry.char_indices().map(|(b, _)| b).collect();
 
     let mut r = (0..=final_end).rev();
     let mut qcsr = query.chars().rev();
@@ -91,7 +76,7 @@ fn find_indexes(entry: &str, query: &str) -> Option<Match> {
         while let Some(i) = r.next() {
             if let Some(ec) = entry.chars().nth(i) {
                 if c == ec {
-                    indexes.push(i);
+                    indexes.push(byte_offsets[i]);
                     break;
                 }
             }
@@ -137,5 +122,17 @@ mod tests {
         assert_ne!(None, res);
         let m = res.unwrap();
         assert_eq!(vec![18, 24], m.match_indexes);
+    }
+
+    #[test]
+    fn indexes_multibyte() {
+        // `é` is 2 bytes, so char position and byte offset diverge from
+        // here on: char index of 'z' is 6, byte offset is 7.
+        let e = "héllo/zero";
+        let res = fuzzy::find_indexes(e, "ze");
+        assert_ne!(None, res);
+        let m = res.unwrap();
+        assert_eq!(vec![7, 8], m.match_indexes);
+        assert_eq!("ze", &e[m.match_indexes[0]..=m.match_indexes[1]]);
     }
 }

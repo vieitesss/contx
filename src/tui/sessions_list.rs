@@ -55,44 +55,41 @@ impl SessionsList {
         Ok(None)
     }
 
+    fn get_hl_segments(indexes: &[usize]) -> Vec<(usize, usize)> {
+        let mut segments: Vec<(usize, usize)> = vec![];
+        let mut seg: (usize, usize) = (indexes[0], indexes[0]);
+        for &idx in indexes[1..].iter() {
+            if idx == seg.1 + 1 {
+                seg.1 = idx;
+                continue;
+            } else {
+                segments.push(seg);
+                seg = (idx, idx);
+            }
+        }
+        segments.push(seg);
+
+        segments
+    }
+
     pub fn format_line<'a>(&self, m: &'a fuzzy::Match) -> Line<'a> {
         let mi_len = m.match_indexes.len();
         if mi_len == 0 {
             return Line::from(Span::from(&m.entry));
         }
 
-        let mut spans: Vec<_> = vec![];
-        let mut start = 0;
-        let mut hl = m.match_indexes[0] == 0;
-        let mut mi = 0;
-        for (i, _) in m.entry.char_indices() {
-            if m.match_indexes[mi] == i {
-                if !hl {
-                    // Save normal and start highlighting.
-                    spans.push(
-                        Span::from(&m.entry[start..i]).style(NORMAL_STYLE),
-                    );
-                    start = i;
-                    hl = true;
-                }
-                mi += 1;
-            } else {
-                if hl {
-                    spans.push(Span::from(&m.entry[start..i]).style(HL_STYLE));
-                    start = i;
-                    hl = false;
-                }
-            }
-            if mi == mi_len {
-                spans.push(Span::from(&m.entry[start..i + 1]).style(HL_STYLE));
-                if i + 1 < m.entry.len() {
-                    spans.push(
-                        Span::from(&m.entry[i + 1..]).style(NORMAL_STYLE),
-                    );
-                }
-                break;
-            }
+        let hl_segments = SessionsList::get_hl_segments(&m.match_indexes);
+
+        let mut spans = vec![];
+        let mut normal_start = 0;
+        for i in hl_segments.iter() {
+            spans.push(
+                Span::from(&m.entry[normal_start..i.0]).style(NORMAL_STYLE),
+            );
+            spans.push(Span::from(&m.entry[i.0..=i.1]).style(HL_STYLE));
+            normal_start = i.1 + 1;
         }
+        spans.push(Span::from(&m.entry[normal_start..]).style(NORMAL_STYLE));
 
         Line::from(spans)
     }
@@ -115,6 +112,21 @@ mod tests {
     use super::SessionsList;
     use crate::fuzzy;
     use ratatui::text::{Line, Span};
+
+    #[test]
+    fn segments() {
+        let idxs: Vec<usize> = vec![0, 1, 3, 5, 6, 7, 9, 11];
+        let seg = SessionsList::get_hl_segments(&idxs);
+        assert_eq![vec![(0, 1), (3, 3), (5, 7), (9, 9), (11, 11)], seg];
+
+        let idxs: Vec<usize> = vec![2, 3, 4, 5, 6, 7, 9, 10];
+        let seg = SessionsList::get_hl_segments(&idxs);
+        assert_eq![vec![(2, 7), (9, 10)], seg];
+
+        let idxs: Vec<usize> = vec![3, 6, 9];
+        let seg = SessionsList::get_hl_segments(&idxs);
+        assert_eq![vec![(3, 3), (6, 6), (9, 9)], seg];
+    }
 
     #[test]
     fn formatting_1() {
@@ -142,6 +154,7 @@ mod tests {
             Line::from(vec![
                 Span::from("/user/z").style(super::NORMAL_STYLE),
                 Span::from("e").style(super::HL_STYLE),
+                Span::default(),
             ]),
             l
         );
@@ -153,6 +166,7 @@ mod tests {
         let l = sl.format_line(&m);
         assert_eq!(
             Line::from(vec![
+                Span::default(),
                 Span::from("/").style(super::HL_STYLE),
                 Span::from("user/ze").style(super::NORMAL_STYLE),
             ]),
