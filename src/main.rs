@@ -1,4 +1,5 @@
 mod config;
+mod fuzzy;
 mod tmux;
 mod tui;
 

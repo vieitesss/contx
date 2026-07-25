@@ -28,7 +28,7 @@ impl Search {
         Some(Message::FilterSessions(self.text.clone()))
     }
 
-    pub fn handle_events(&mut self) -> Result<Option<Message>, io::Error> {
+    pub fn handle_events(&mut self) -> io::Result<Option<Message>> {
         if let Event::Key(key) = event::read()? {
             if key.kind == KeyEventKind::Press {
                 match key.modifiers {

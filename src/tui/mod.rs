@@ -83,9 +83,10 @@ impl Tui {
         // ┏debug━━┓
         // ┗━━━━━━━┛
 
-        let mut constraints = vec![Constraint::Length(1), Constraint::Fill(1)];
+        let mut constraints =
+            vec![Constraint::Length(1), Constraint::Percentage(20)];
         if env::var("TUI_DEBUG").is_ok() {
-            constraints.push(Constraint::Max(10));
+            constraints.push(Constraint::Fill(1));
         }
 
         let areas = Layout::default()
