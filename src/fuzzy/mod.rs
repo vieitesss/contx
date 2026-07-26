@@ -54,7 +54,6 @@ fn find_indexes(entry: &str, query: &str) -> Option<Match> {
         }
     }
 
-    let mut indexes: Vec<usize> = vec![];
     let final_end;
     if let Some(e) = end {
         final_end = e;
@@ -69,16 +68,16 @@ fn find_indexes(entry: &str, query: &str) -> Option<Match> {
     let byte_offsets: Vec<usize> =
         entry.char_indices().map(|(b, _)| b).collect();
 
+    let mut indexes: Vec<usize> = vec![];
     let mut r = (0..=final_end).rev();
     let mut qcsr = query.chars().rev();
+    let ecs_vec: Vec<char> = entry.chars().collect();
 
     while let Some(c) = qcsr.next() {
         while let Some(i) = r.next() {
-            if let Some(ec) = entry.chars().nth(i) {
-                if c == ec {
-                    indexes.push(byte_offsets[i]);
-                    break;
-                }
+            if c == ecs_vec[i] {
+                indexes.push(byte_offsets[i]);
+                break;
             }
         }
     }
