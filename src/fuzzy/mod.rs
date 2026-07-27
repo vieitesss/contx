@@ -4,96 +4,113 @@ pub struct Match {
     pub match_indexes: Vec<usize>,
 }
 
-fn find_indexes(entry: &str, query: &str) -> Option<Match> {
+fn find_indices(entry: &str, query: &str) -> Option<Match> {
     if query == "" {
         return Some(Match {
             entry: entry.to_string(),
             match_indexes: vec![],
         });
-    } else if query.len() == 1 {
-        if let Some(f) = entry.rfind(query) {
+    }
+
+    if query.len() == 1 {
+        if let Some(last_match) = entry.rfind(query) {
             return Some(Match {
                 entry: entry.to_string(),
-                match_indexes: vec![f],
+                match_indexes: vec![last_match],
             });
         } else {
             return None;
         }
     }
 
-    // Forward: looking for the end.
-
-    // `end`: the index in `entry` that matches the last char in `query`
-    let mut end: Option<usize> = None;
+    let mut indices: Vec<usize> = vec![];
+    let query_chars: Vec<_> = query.chars().collect();
+    let entry_chars: Vec<_> = entry.chars().collect();
+    let entry_len = entry_chars.len();
+    let query_len = query_chars.len();
     let mut entry_idx = 0;
-    let mut last_qc: char = '\0';
-    let mut qcs = query.chars();
-    let mut ecs = entry.chars();
+    let mut query_idx = 0;
 
-    loop {
-        if let Some(c) = qcs.next() {
-            last_qc = c;
-            end = None;
-            while let Some(ec) = ecs.next() {
-                // z
-                if c == ec {
-                    end = Some(entry_idx);
-                    entry_idx += 1;
-                    break;
-                }
+    // Looking for the full match.
+
+    while query_idx < query_len {
+        let qc = query_chars[query_idx];
+        while entry_idx < entry_len {
+            if qc == entry_chars[entry_idx] {
+                indices.push(entry_idx);
                 entry_idx += 1;
+                break;
             }
-        } else {
-            while let Some(ec) = ecs.next() {
-                if last_qc == ec {
-                    end = Some(entry_idx);
-                }
-                entry_idx += 1;
-            }
-            break;
+            entry_idx += 1;
         }
+        query_idx += 1;
     }
 
-    let final_end;
-    if let Some(e) = end {
-        final_end = e;
-    } else {
+    let indexes_len = indices.len();
+
+    if indexes_len == 0 || query_len != indexes_len {
         return None;
     }
 
-    // Backwards: setting the matches.
+    debug_assert!(entry_idx == indices[indexes_len - 1] + 1);
+    debug_assert!(query_idx == query_len);
 
-    // Char index -> byte offset, since `indexes` must be byte offsets
-    // (consumers slice `entry` with them), but the scan below walks chars.
-    let byte_offsets: Vec<usize> =
-        entry.char_indices().map(|(b, _)| b).collect();
+    let mut min_span = indices[indexes_len - 1] - indices[0];
+    let mut match_option: Vec<usize> = vec![];
+    query_idx = query_len - 1;
+    entry_idx = indices[indexes_len - 1];
 
-    let mut indexes: Vec<usize> = vec![];
-    let mut r = (0..=final_end).rev();
-    let mut qcsr = query.chars().rev();
-    let ecs_vec: Vec<char> = entry.chars().collect();
-
-    while let Some(c) = qcsr.next() {
-        while let Some(i) = r.next() {
-            if c == ecs_vec[i] {
-                indexes.push(byte_offsets[i]);
-                break;
-            }
+    loop {
+        if entry_idx == entry_len {
+            break;
         }
+
+        if entry_chars[entry_idx] == query_chars[query_idx] {
+            match_option.push(entry_idx);
+            query_idx -= 1;
+            entry_idx -= 1;
+            loop {
+                if entry_chars[entry_idx] == query_chars[query_idx] {
+                    match_option.push(entry_idx);
+                    if query_idx == 0 {
+                        break;
+                    }
+                    query_idx -= 1;
+                }
+                entry_idx -= 1;
+            }
+
+            let span = match_option[0] - match_option[query_len - 1];
+            entry_idx = match_option[0];
+            query_idx = query_len - 1;
+
+            if span <= min_span {
+                match_option.reverse();
+                indices = match_option.clone();
+                min_span = span;
+            }
+
+            match_option.clear();
+        }
+
+        entry_idx += 1;
     }
 
-    indexes.reverse();
+    let byte_offset: Vec<_> = entry.char_indices().map(|(i, _)| i).collect();
 
-    return Some(Match {
+    let final_indices: Vec<_> =
+        indices.iter().map(|i| byte_offset[*i]).collect();
+
+    Some(Match {
         entry: entry.to_string(),
-        match_indexes: indexes,
-    });
+        match_indexes: final_indices,
+    })
 }
 
 pub fn search(entries: &[&str], query: &str) -> Vec<Match> {
     entries
         .iter()
-        .filter_map(|e| find_indexes(e, query))
+        .filter_map(|e| find_indices(e, query))
         .collect()
 }
 
@@ -105,22 +122,73 @@ mod tests {
     fn indexes() {
         let e = "hello/zero";
         let mut q = "z";
-        let res = fuzzy::find_indexes(e, q);
+        let res = fuzzy::find_indices(e, q);
         assert_ne!(None, res);
         let m = res.unwrap();
         assert_eq!(vec![6], m.match_indexes);
 
-        q = "ze";
-        let res = fuzzy::find_indexes(e, q);
+        q = "zea";
+        let res = fuzzy::find_indices(e, q);
+        assert_eq!(None, res);
+
+        let e = "a...ab";
+        let res = fuzzy::find_indices(e, "ab");
+        assert_ne!(None, res);
+        let m = res.unwrap();
+        assert_eq!(vec![4, 5], m.match_indexes);
+
+        let e = "a......a.b....c.";
+        let res = fuzzy::find_indices(e, "abc");
+        assert_ne!(None, res);
+        let m = res.unwrap();
+        assert_eq!(vec![7, 9, 14], m.match_indexes);
+
+        let e = "aaeaaeaeaeeaezerobeee";
+        let res = fuzzy::find_indices(e, "eee");
+        assert_ne!(None, res);
+        let m = res.unwrap();
+        assert_eq!(vec![18, 19, 20], m.match_indexes);
+
+        let e = "aaeaaeaeaeeaezerobee";
+        let res = fuzzy::find_indices(e, "eee");
+        assert_ne!(None, res);
+        let m = res.unwrap();
+        assert_eq!(vec![9, 10, 12], m.match_indexes);
+
+        let e = "hello/zero";
+        let res = fuzzy::find_indices(e, "ze");
+        assert_ne!(None, res);
+        let m = res.unwrap();
+        assert_eq!(vec![6, 7], m.match_indexes);
+
+        let res = fuzzy::find_indices(e, "ze");
         assert_ne!(None, res);
         let m = res.unwrap();
         assert_eq!(vec![6, 7], m.match_indexes);
 
         let e = "/user/vieites/opt/zerobrew";
-        let res = fuzzy::find_indexes(e, q);
+        let res = fuzzy::find_indices(e, "ze");
         assert_ne!(None, res);
         let m = res.unwrap();
-        assert_eq!(vec![18, 24], m.match_indexes);
+        assert_eq!(vec![18, 19], m.match_indexes);
+
+        let res = fuzzy::find_indices(e, "e");
+        assert_ne!(None, res);
+        let m = res.unwrap();
+        assert_eq!(vec![24], m.match_indexes);
+
+        q = "ee";
+        let res = fuzzy::find_indices(e, q);
+        assert_ne!(None, res);
+        let m = res.unwrap();
+        assert_eq!(vec![8, 11], m.match_indexes);
+
+        let e = "/user/vieites/opt/zerobrew";
+        let q = "zer";
+        let res = fuzzy::find_indices(e, q);
+        assert_ne!(None, res);
+        let m = res.unwrap();
+        assert_eq!(vec![18, 19, 20], m.match_indexes);
     }
 
     #[test]
@@ -128,10 +196,15 @@ mod tests {
         // `é` is 2 bytes, so char position and byte offset diverge from
         // here on: char index of 'z' is 6, byte offset is 7.
         let e = "héllo/zero";
-        let res = fuzzy::find_indexes(e, "ze");
+        let res = fuzzy::find_indices(e, "ze");
         assert_ne!(None, res);
         let m = res.unwrap();
         assert_eq!(vec![7, 8], m.match_indexes);
         assert_eq!("ze", &e[m.match_indexes[0]..=m.match_indexes[1]]);
+
+        let e = "héllo";
+        let res = fuzzy::find_indices(e, "e");
+        assert_eq!(None, res);
     }
 }
+
