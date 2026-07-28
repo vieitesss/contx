@@ -1,6 +1,5 @@
 use super::message::Message;
 use crate::fuzzy;
-use log::debug;
 use ratatui::{
     buffer::Buffer,
     crossterm::event::{self, Event, KeyEventKind},
@@ -73,12 +72,12 @@ impl SessionsList {
     }
 
     pub fn format_line<'a>(&self, m: &'a fuzzy::Match) -> Line<'a> {
-        let mi_len = m.match_indexes.len();
+        let mi_len = m.match_indices.len();
         if mi_len == 0 {
             return Line::from(Span::from(&m.entry));
         }
 
-        let hl_segments = SessionsList::get_hl_segments(&m.match_indexes);
+        let hl_segments = SessionsList::get_hl_segments(&m.match_indices);
 
         let mut spans = vec![];
         let mut normal_start = 0;
@@ -132,7 +131,7 @@ mod tests {
     fn formatting_1() {
         let m = fuzzy::Match {
             entry: String::from("/user/vieites/opt/zerobrew"),
-            match_indexes: vec![18],
+            match_indices: vec![18],
         };
         let sl = SessionsList::default();
         let l = sl.format_line(&m);
@@ -147,7 +146,7 @@ mod tests {
 
         let m = fuzzy::Match {
             entry: String::from("/user/ze"),
-            match_indexes: vec![7],
+            match_indices: vec![7],
         };
         let l = sl.format_line(&m);
         assert_eq!(
@@ -161,7 +160,7 @@ mod tests {
 
         let m = fuzzy::Match {
             entry: String::from("/user/ze"),
-            match_indexes: vec![0],
+            match_indices: vec![0],
         };
         let l = sl.format_line(&m);
         assert_eq!(
@@ -178,7 +177,7 @@ mod tests {
     fn formatting_2() {
         let m = fuzzy::Match {
             entry: String::from("/user/vieites/opt/zerobrew"),
-            match_indexes: vec![18, 19],
+            match_indices: vec![18, 19],
         };
 
         let sl = SessionsList::default();
@@ -194,7 +193,7 @@ mod tests {
 
         let m = fuzzy::Match {
             entry: String::from("/user/vieites/opt/zerobrew"),
-            match_indexes: vec![18, 24],
+            match_indices: vec![18, 24],
         };
         let l = sl.format_line(&m);
         assert_eq!(
