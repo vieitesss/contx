@@ -1,5 +1,6 @@
 mod config;
 mod fuzzy;
+mod theme;
 mod tmux;
 mod tui;
 
@@ -7,6 +8,8 @@ use env_logger::{Builder, Target};
 use std::fs::OpenOptions;
 use std::io;
 use std::process::exit;
+use terminal_colorsaurus::{QueryOptions, ThemeMode, theme_mode};
+use theme::Theme;
 use tui::Tui;
 
 pub const LOG_FILE: &str = "app.log";
@@ -24,9 +27,16 @@ fn main() -> io::Result<()> {
         .init();
 
     let config_path = DEFAULT_CONFIG_FILE;
+    let theme_mode = theme_mode(QueryOptions::default()).unwrap();
+    let theme: Theme = if ThemeMode::Dark == theme_mode {
+        panic!("dark theme not yet implemented")
+    } else {
+        Theme::LIGHT
+    };
+
     match config::parse(config_path) {
         Ok(c) => {
-            ratatui::run(|terminal| Tui::new(c).run(terminal))?;
+            ratatui::run(|terminal| Tui::new(c, theme).run(terminal))?;
         }
         Err(e) => {
             eprintln!("{e}");

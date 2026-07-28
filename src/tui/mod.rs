@@ -3,12 +3,15 @@ mod message;
 mod search;
 mod sessions_list;
 
-use crate::config::Config;
+use crate::{config::Config, theme::Theme};
 use debug_pane::DebugPane;
 use message::Message;
 use ratatui::{
     DefaultTerminal, Frame,
-    layout::{Constraint, Direction, Layout},
+    buffer::Buffer,
+    layout::{Constraint, Direction, Layout, Rect},
+    style::Style,
+    widgets::Widget,
 };
 use search::Search;
 use sessions_list::SessionsList;
@@ -30,10 +33,11 @@ pub struct Tui {
     debug_pane: DebugPane,
     search: Search,
     focused: Focus,
+    theme: Theme,
 }
 
 impl Tui {
-    pub fn new(c: Config) -> Self {
+    pub fn new(c: Config, theme: Theme) -> Self {
         let paths: Vec<&str> = c.paths.iter().map(String::as_str).collect();
 
         Tui {
@@ -42,6 +46,7 @@ impl Tui {
             sessions_list: SessionsList::new(&paths),
             debug_pane: DebugPane::new(crate::LOG_FILE),
             focused: Focus::default(),
+            theme: theme,
         }
     }
 
@@ -70,11 +75,25 @@ impl Tui {
         }
     }
 
+    fn render(&self, frame: &mut Frame) {
+        frame.render_widget(self, frame.area());
+    }
+
     fn exit(&mut self) {
         self.exit = true;
     }
 
-    fn render(&mut self, frame: &mut Frame) {
+    pub fn run(&mut self, terminal: &mut DefaultTerminal) -> io::Result<()> {
+        while !self.exit {
+            terminal.draw(|frame| self.render(frame))?;
+            self.handle_events()?;
+        }
+        Ok(())
+    }
+}
+
+impl Widget for &Tui {
+    fn render(self, area: Rect, buf: &mut Buffer) {
         // ━search━━
         // ┏list━━━┓
         // ┃       ┃
@@ -92,20 +111,14 @@ impl Tui {
         let areas = Layout::default()
             .direction(Direction::Vertical)
             .constraints(constraints)
-            .split(frame.area());
+            .split(area);
 
-        frame.render_widget(&self.search, areas[0]);
-        frame.render_widget(&self.sessions_list, areas[1]);
+        buf.set_style(area, Style::new().bg(self.theme.bg).fg(self.theme.fg));
+
+        self.search.render(areas[0], buf);
+        self.sessions_list.render(areas[1], buf);
         if env::var("TUI_DEBUG").is_ok() {
-            frame.render_widget(&self.debug_pane, areas[2]);
+            self.debug_pane.render(areas[2], buf);
         }
-    }
-
-    pub fn run(&mut self, terminal: &mut DefaultTerminal) -> io::Result<()> {
-        while !self.exit {
-            terminal.draw(|frame| self.render(frame))?;
-            self.handle_events()?;
-        }
-        Ok(())
     }
 }

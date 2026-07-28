@@ -9,4 +9,5 @@ log = "0.4.33"
 ratatui = "0.30.2"
 serde = { version = "1.0.229", features = [ "derive" ] }
 shellexpand = "3.1.2"
+terminal-colorsaurus = "1.0.3"
 toml = "1.1.3"
