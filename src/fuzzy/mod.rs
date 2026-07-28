@@ -12,17 +12,6 @@ fn find_indices(entry: &str, query: &str) -> Option<Match> {
         });
     }
 
-    if query.len() == 1 {
-        if let Some(last_match) = entry.rfind(query) {
-            return Some(Match {
-                entry: entry.to_string(),
-                match_indexes: vec![last_match],
-            });
-        } else {
-            return None;
-        }
-    }
-
     let mut indices: Vec<usize> = vec![];
     let query_chars: Vec<_> = query.chars().collect();
     let entry_chars: Vec<_> = entry.chars().collect();
@@ -35,13 +24,14 @@ fn find_indices(entry: &str, query: &str) -> Option<Match> {
 
     while query_idx < query_len {
         let qc = query_chars[query_idx];
-        while entry_idx < entry_len {
-            if qc == entry_chars[entry_idx] {
-                indices.push(entry_idx);
-                entry_idx += 1;
-                break;
-            }
+        if let Some(off) =
+            entry_chars[entry_idx..].iter().position(|&c| c == qc)
+        {
+            entry_idx += off;
+            indices.push(entry_idx);
             entry_idx += 1;
+        } else {
+            return None;
         }
         query_idx += 1;
     }
@@ -52,45 +42,45 @@ fn find_indices(entry: &str, query: &str) -> Option<Match> {
         return None;
     }
 
-    debug_assert!(entry_idx == indices[indexes_len - 1] + 1);
-    debug_assert!(query_idx == query_len);
+    assert!(entry_idx == indices[indexes_len - 1] + 1);
+    assert!(query_idx == query_len);
 
     let mut min_span = indices[indexes_len - 1] - indices[0];
-    let mut match_option: Vec<usize> = vec![];
-    query_idx = query_len - 1;
+    let mut candidate: Vec<usize> = vec![];
+
+    // We'll tight the span of the first found match.
+    // The first condition from the next loop will always be true because we
+    // are setting the query index with the last saved entry index.
     entry_idx = indices[indexes_len - 1];
+    query_idx = query_len - 1;
 
-    loop {
-        if entry_idx == entry_len {
-            break;
-        }
-
+    println!("entry={entry};query={query}");
+    println!("indices={:?}", indices);
+    while entry_idx < entry_len {
         if entry_chars[entry_idx] == query_chars[query_idx] {
-            match_option.push(entry_idx);
-            query_idx -= 1;
-            entry_idx -= 1;
-            loop {
-                if entry_chars[entry_idx] == query_chars[query_idx] {
-                    match_option.push(entry_idx);
-                    if query_idx == 0 {
-                        break;
-                    }
-                    query_idx -= 1;
+            println!("query_idx={query_idx:?}");
+            for entry_i in (0..=entry_idx).rev() {
+                if entry_chars[entry_i] != query_chars[query_idx] {
+                    continue;
                 }
-                entry_idx -= 1;
+                candidate.push(entry_i);
+                if query_idx == 0 {
+                    break;
+                }
+                query_idx -= 1;
             }
 
-            let span = match_option[0] - match_option[query_len - 1];
-            entry_idx = match_option[0];
+            println!("candidate={candidate:?}");
+            let span = candidate[0] - candidate[query_len - 1];
+            entry_idx = candidate[0];
             query_idx = query_len - 1;
 
             if span <= min_span {
-                match_option.reverse();
-                indices = match_option.clone();
+                candidate.reverse();
+                indices = std::mem::take(&mut candidate);
                 min_span = span;
             }
-
-            match_option.clear();
+            candidate.clear();
         }
 
         entry_idx += 1;
@@ -207,4 +197,3 @@ mod tests {
         assert_eq!(None, res);
     }
 }
-
