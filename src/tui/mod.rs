@@ -1,10 +1,8 @@
-mod debug_pane;
 mod message;
 mod search;
 mod sessions_list;
 
 use crate::{config::Config, theme::Theme};
-use debug_pane::DebugPane;
 use message::Message;
 use ratatui::{
     DefaultTerminal, Frame,
@@ -15,47 +13,30 @@ use ratatui::{
 };
 use search::Search;
 use sessions_list::SessionsList;
-use std::env;
 use std::io;
+use terminal_colorsaurus::ThemeMode;
 
-#[derive(Default)]
-enum Focus {
-    SessionsList,
-    DebugPane,
-    #[default]
-    Search,
-}
-
-#[derive(Default)]
 pub struct Tui {
     exit: bool,
     sessions_list: SessionsList,
-    debug_pane: DebugPane,
     search: Search,
-    focused: Focus,
-    theme: Theme,
+    theme_mode: ThemeMode,
 }
 
 impl Tui {
-    pub fn new(c: Config, theme: Theme) -> Self {
+    pub fn new(c: Config, theme_mode: ThemeMode) -> Self {
         let paths: Vec<&str> = c.paths.iter().map(String::as_str).collect();
 
         Tui {
             exit: false,
             search: Search::default(),
             sessions_list: SessionsList::new(&paths),
-            debug_pane: DebugPane::new(crate::LOG_FILE),
-            focused: Focus::default(),
-            theme: theme,
+            theme_mode: theme_mode,
         }
     }
 
     fn handle_events(&mut self) -> io::Result<()> {
-        let mes: Option<Message> = match self.focused {
-            Focus::SessionsList => self.sessions_list.handle_events()?,
-            Focus::Search => self.search.handle_events()?,
-            Focus::DebugPane => None,
-        };
+        let mes: Option<Message> = self.search.handle_events()?;
         if mes.is_some() {
             self.handle_message(mes.unwrap())
         }
@@ -69,6 +50,10 @@ impl Tui {
                 return;
             }
             Message::FilterSessions(_) => self.sessions_list.handle_message(m),
+            Message::NextSession
+            | Message::PrevSession
+            | Message::FirstSession
+            | Message::LastSession => self.sessions_list.handle_message(m),
         };
         if next.is_some() {
             self.handle_message(next.unwrap());
@@ -99,26 +84,19 @@ impl Widget for &Tui {
         // ┃       ┃
         // ┃       ┃
         // ┗━━━━━━━┛
-        // ┏debug━━┓
-        // ┗━━━━━━━┛
 
-        let mut constraints =
+        let constraints =
             vec![Constraint::Length(1), Constraint::Percentage(20)];
-        if env::var("TUI_DEBUG").is_ok() {
-            constraints.push(Constraint::Fill(1));
-        }
 
         let areas = Layout::default()
             .direction(Direction::Vertical)
             .constraints(constraints)
             .split(area);
 
-        buf.set_style(area, Style::new().bg(self.theme.bg).fg(self.theme.fg));
+        let t = Theme::get(self.theme_mode);
+        buf.set_style(area, Style::new().bg(t.bg).fg(t.fg));
 
-        self.search.render(areas[0], buf);
-        self.sessions_list.render(areas[1], buf);
-        if env::var("TUI_DEBUG").is_ok() {
-            self.debug_pane.render(areas[2], buf);
-        }
+        self.search.render(areas[0], buf, self.theme_mode);
+        self.sessions_list.render(areas[1], buf, self.theme_mode);
     }
 }

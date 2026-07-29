@@ -1,4 +1,4 @@
-use crate::tui::message::Message;
+use crate::{theme::Theme, tui::message::Message};
 use ratatui::{
     buffer::Buffer,
     crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
@@ -8,8 +8,7 @@ use ratatui::{
     widgets::Widget,
 };
 use std::io;
-
-const ARROW_STYLE: Style = Style::new().blue();
+use terminal_colorsaurus::ThemeMode;
 
 #[derive(Default)]
 pub struct Search {
@@ -43,8 +42,23 @@ impl Search {
                         if key.code == KeyCode::Char('w') {
                             self.remove_word();
                             return Ok(self.send_filter());
-                        } else if key.code == KeyCode::Char('c') {
+                        }
+                        if key.code == KeyCode::Char('c') {
                             return Ok(Some(Message::Exit));
+                        }
+                        if key.code == KeyCode::Char('j') {
+                            return Ok(Some(Message::NextSession));
+                        }
+                        if key.code == KeyCode::Char('k') {
+                            return Ok(Some(Message::PrevSession));
+                        }
+                        if key.code == KeyCode::Char('g')
+                            || key.code == KeyCode::Char('b')
+                        {
+                            return Ok(Some(Message::LastSession));
+                        }
+                        if key.code == KeyCode::Char('t') {
+                            return Ok(Some(Message::FirstSession));
                         }
                     }
                     _ => {}
@@ -56,6 +70,18 @@ impl Search {
                     KeyCode::Backspace => {
                         let _ = self.text.pop();
                     }
+                    KeyCode::Down => {
+                        return Ok(Some(Message::NextSession));
+                    }
+                    KeyCode::Up => {
+                        return Ok(Some(Message::PrevSession));
+                    }
+                    KeyCode::End => {
+                        return Ok(Some(Message::LastSession));
+                    }
+                    KeyCode::Home => {
+                        return Ok(Some(Message::FirstSession));
+                    }
                     _ => {}
                 }
                 return Ok(self.send_filter());
@@ -63,14 +89,12 @@ impl Search {
         }
         Ok(None)
     }
-}
 
-impl Widget for &Search {
-    fn render(self, area: Rect, buf: &mut Buffer) {
+    pub fn render(&self, area: Rect, buf: &mut Buffer, theme_mode: ThemeMode) {
         Line::from(vec![
-            Span::styled("> ", ARROW_STYLE),
+            Span::from("> "),
             Span::from(&self.text),
-            Span::from("█"),
+            Span::styled("█", Style::new().fg(Theme::get(theme_mode).accent)),
         ])
         .render(area, buf);
     }

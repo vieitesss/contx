@@ -28,15 +28,10 @@ fn main() -> io::Result<()> {
 
     let config_path = DEFAULT_CONFIG_FILE;
     let theme_mode = theme_mode(QueryOptions::default()).unwrap();
-    let theme: Theme = if ThemeMode::Dark == theme_mode {
-        panic!("dark theme not yet implemented")
-    } else {
-        Theme::LIGHT
-    };
 
     match config::parse(config_path) {
         Ok(c) => {
-            ratatui::run(|terminal| Tui::new(c, theme).run(terminal))?;
+            ratatui::run(|terminal| Tui::new(c, theme_mode).run(terminal))?;
         }
         Err(e) => {
             eprintln!("{e}");

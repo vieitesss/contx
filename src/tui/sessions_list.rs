@@ -1,23 +1,22 @@
 use super::message::Message;
-use crate::fuzzy;
+use crate::{fuzzy, theme::Theme};
 use ratatui::{
     buffer::Buffer,
-    crossterm::event::{self, Event, KeyEventKind},
     layout::Rect,
-    style::{Color, Style},
+    style::Style,
     text::{Line, Span},
     widgets::{Block, Paragraph, Widget},
 };
-use std::io;
+use terminal_colorsaurus::ThemeMode;
 
 pub const NORMAL_STYLE: Style = Style::new();
-pub const HL_STYLE: Style = Style::new().bg(Color::Yellow);
 
 #[derive(Default, Debug, Clone)]
 pub struct SessionsList {
     pub paths: Vec<String>,
     matches: Vec<fuzzy::Match>,
     filtering: String,
+    selected_line: usize, // 1-indexed
 }
 
 impl SessionsList {
@@ -27,6 +26,7 @@ impl SessionsList {
             paths: ps,
             matches: fuzzy::search(paths, ""),
             filtering: String::new(),
+            selected_line: 1,
         }
     }
 
@@ -37,21 +37,34 @@ impl SessionsList {
                     self.paths.iter().map(String::as_str).collect();
                 self.matches = fuzzy::search(&ps, &s);
                 self.filtering = s.to_string();
+
+                let l = self.matches.len();
+                if l < self.selected_line && l > 0 {
+                    self.selected_line = l;
+                }
+            }
+            Message::NextSession => {
+                if self.selected_line < self.matches.len() {
+                    self.selected_line += 1;
+                }
+            }
+            Message::PrevSession => {
+                if self.selected_line > 1 {
+                    self.selected_line -= 1;
+                }
+            }
+            Message::FirstSession => {
+                self.selected_line = 1;
+            }
+            Message::LastSession => {
+                let l = self.matches.len();
+                if l > 0 {
+                    self.selected_line = l;
+                }
             }
             _ => {}
         };
         None
-    }
-
-    pub fn handle_events(&mut self) -> io::Result<Option<Message>> {
-        if let Event::Key(key) = event::read()? {
-            if key.kind == KeyEventKind::Press {
-                match key.code {
-                    _ => {}
-                }
-            }
-        }
-        Ok(None)
     }
 
     fn get_hl_segments(indexes: &[usize]) -> Vec<(usize, usize)> {
@@ -71,33 +84,52 @@ impl SessionsList {
         segments
     }
 
-    pub fn format_line<'a>(&self, m: &'a fuzzy::Match) -> Line<'a> {
+    pub fn format_line<'a>(
+        &self,
+        m: &'a fuzzy::Match,
+        selected: bool,
+        theme_mode: ThemeMode,
+    ) -> Line<'a> {
         let mi_len = m.match_indices.len();
+        let mut line = Line::default();
+        let theme = Theme::get(theme_mode);
+
+        if selected {
+            line = line.style(Style::new().bg(theme.bg_alt));
+        }
+
         if mi_len == 0 {
-            return Line::from(Span::from(&m.entry));
+            line.push_span(Span::from(&m.entry));
+            return line;
         }
 
         let hl_segments = SessionsList::get_hl_segments(&m.match_indices);
 
-        let mut spans = vec![];
         let mut normal_start = 0;
+        let hl = Style::new().fg(theme.accent);
         for i in hl_segments.iter() {
-            spans.push(
+            line.push_span(
                 Span::from(&m.entry[normal_start..i.0]).style(NORMAL_STYLE),
             );
-            spans.push(Span::from(&m.entry[i.0..=i.1]).style(HL_STYLE));
+            line.push_span(Span::from(&m.entry[i.0..=i.1]).style(hl));
             normal_start = i.1 + 1;
         }
-        spans.push(Span::from(&m.entry[normal_start..]).style(NORMAL_STYLE));
+        line.push_span(
+            Span::from(&m.entry[normal_start..]).style(NORMAL_STYLE),
+        );
 
-        Line::from(spans)
+        line
     }
-}
 
-impl Widget for &SessionsList {
-    fn render(self, area: Rect, buf: &mut Buffer) {
-        let lines: Vec<Line> =
-            self.matches.iter().map(|m| self.format_line(m)).collect();
+    pub fn render(&self, area: Rect, buf: &mut Buffer, theme_mode: ThemeMode) {
+        let lines: Vec<Line> = self
+            .matches
+            .iter()
+            .enumerate()
+            .map(|(i, m)| {
+                self.format_line(m, i + 1 == self.selected_line, theme_mode)
+            })
+            .collect();
 
         Paragraph::new(lines)
             .block(Block::bordered())
@@ -109,8 +141,15 @@ impl Widget for &SessionsList {
 mod tests {
 
     use super::SessionsList;
-    use crate::fuzzy;
-    use ratatui::text::{Line, Span};
+    use crate::{fuzzy, theme::Theme};
+    use ratatui::{
+        style::Style,
+        text::{Line, Span},
+    };
+    use terminal_colorsaurus::ThemeMode;
+
+    const THEME_MODE: ThemeMode = ThemeMode::Light;
+    const HL: Style = Style::new().fg(Theme::LIGHT.accent);
 
     #[test]
     fn segments() {
@@ -134,11 +173,11 @@ mod tests {
             match_indices: vec![18],
         };
         let sl = SessionsList::default();
-        let l = sl.format_line(&m);
+        let l = sl.format_line(&m, false, THEME_MODE);
         assert_eq!(
             Line::from(vec![
                 Span::from("/user/vieites/opt/").style(super::NORMAL_STYLE),
-                Span::from("z").style(super::HL_STYLE),
+                Span::from("z").style(HL),
                 Span::from("erobrew").style(super::NORMAL_STYLE),
             ]),
             l
@@ -148,11 +187,11 @@ mod tests {
             entry: String::from("/user/ze"),
             match_indices: vec![7],
         };
-        let l = sl.format_line(&m);
+        let l = sl.format_line(&m, false, THEME_MODE);
         assert_eq!(
             Line::from(vec![
                 Span::from("/user/z").style(super::NORMAL_STYLE),
-                Span::from("e").style(super::HL_STYLE),
+                Span::from("e").style(HL),
                 Span::default(),
             ]),
             l
@@ -162,11 +201,11 @@ mod tests {
             entry: String::from("/user/ze"),
             match_indices: vec![0],
         };
-        let l = sl.format_line(&m);
+        let l = sl.format_line(&m, false, THEME_MODE);
         assert_eq!(
             Line::from(vec![
                 Span::default(),
-                Span::from("/").style(super::HL_STYLE),
+                Span::from("/").style(HL),
                 Span::from("user/ze").style(super::NORMAL_STYLE),
             ]),
             l
@@ -181,11 +220,11 @@ mod tests {
         };
 
         let sl = SessionsList::default();
-        let l = sl.format_line(&m);
+        let l = sl.format_line(&m, false, THEME_MODE);
         assert_eq!(
             Line::from(vec![
                 Span::from("/user/vieites/opt/").style(super::NORMAL_STYLE),
-                Span::from("ze").style(super::HL_STYLE),
+                Span::from("ze").style(HL),
                 Span::from("robrew").style(super::NORMAL_STYLE),
             ]),
             l
@@ -195,13 +234,13 @@ mod tests {
             entry: String::from("/user/vieites/opt/zerobrew"),
             match_indices: vec![18, 24],
         };
-        let l = sl.format_line(&m);
+        let l = sl.format_line(&m, false, THEME_MODE);
         assert_eq!(
             Line::from(vec![
                 Span::from("/user/vieites/opt/").style(super::NORMAL_STYLE),
-                Span::from("z").style(super::HL_STYLE),
+                Span::from("z").style(HL),
                 Span::from("erobr").style(super::NORMAL_STYLE),
-                Span::from("e").style(super::HL_STYLE),
+                Span::from("e").style(HL),
                 Span::from("w").style(super::NORMAL_STYLE),
             ]),
             l
