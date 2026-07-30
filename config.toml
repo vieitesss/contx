@@ -21,8 +21,8 @@
 #  - /home/<user>/another/again
 
 paths = [
-    # "$HOME/personal",
-    # "~/.config",
-    # "$HOME/opt/",
+    "$HOME/personal",
+    "~/.config",
+    "$HOME/opt/",
     "$HOME/work/*",
 ]

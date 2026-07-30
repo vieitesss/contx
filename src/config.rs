@@ -3,11 +3,12 @@ use shellexpand;
 use std::error;
 use std::fmt;
 use std::fs;
+use std::io;
 use std::path::Path;
 
 #[derive(Debug)]
 pub enum ConfigError {
-    FileMissing(std::io::Error, String),
+    IoError(io::Error, String),
     IncorrectStructure(toml::de::Error),
     PathHasInvalidEnv(std::env::VarError, String, String),
     PathIsNotAbsolute(String),
@@ -18,7 +19,7 @@ pub enum ConfigError {
 impl error::Error for ConfigError {
     fn source(&self) -> Option<&(dyn error::Error + 'static)> {
         match self {
-            ConfigError::FileMissing(e, _) => Some(e),
+            ConfigError::IoError(e, _) => Some(e),
             ConfigError::IncorrectStructure(e) => Some(e),
             ConfigError::PathHasInvalidEnv(e, _, _) => Some(e),
             ConfigError::PathIsNotAbsolute(_) => None,
@@ -31,7 +32,7 @@ impl error::Error for ConfigError {
 impl fmt::Display for ConfigError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ConfigError::FileMissing(e, path) => {
+            ConfigError::IoError(e, path) => {
                 write!(f, "{e}; {path}")
             }
             ConfigError::PathIsNotAbsolute(path) => {
@@ -74,7 +75,7 @@ fn inner_dirs(dir: &str) -> Vec<String> {
 
 fn normalize_path(path: &str) -> Result<Vec<String>, ConfigError> {
     let p: String = match shellexpand::full(path) {
-        Ok(o) => o.as_ref().to_owned(),
+        Ok(o) => String::from(o),
         Err(e) => {
             return Err(ConfigError::PathHasInvalidEnv(
                 e.cause,
@@ -115,9 +116,19 @@ fn normalize_paths(paths: &[&str]) -> Result<Vec<String>, ConfigError> {
 }
 
 pub fn parse(config_path: &str) -> Result<Config, ConfigError> {
-    let res = fs::read_to_string(config_path);
+    let p: String = match shellexpand::full(config_path) {
+        Ok(o) => String::from(o),
+        Err(e) => {
+            return Err(ConfigError::IoError(
+                io::Error::new(io::ErrorKind::NotFound, e),
+                config_path.to_string(),
+            ));
+        }
+    };
+
+    let res = fs::read_to_string(p);
     if let Err(e) = res {
-        return Err(ConfigError::FileMissing(e, config_path.to_string()));
+        return Err(ConfigError::IoError(e, config_path.to_string()));
     }
 
     let content = res.unwrap();

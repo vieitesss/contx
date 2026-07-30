@@ -82,6 +82,9 @@ impl Search {
                     KeyCode::Home => {
                         return Ok(Some(Message::FirstSession));
                     }
+                    KeyCode::Enter => {
+                        return Ok(Some(Message::SelectSession));
+                    }
                     _ => {}
                 }
                 return Ok(self.send_filter());

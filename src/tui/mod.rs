@@ -53,7 +53,11 @@ impl Tui {
             Message::NextSession
             | Message::PrevSession
             | Message::FirstSession
-            | Message::LastSession => self.sessions_list.handle_message(m),
+            | Message::LastSession
+            | Message::SelectSession => self.sessions_list.handle_message(m),
+            Message::TmuxError(e) => {
+                panic!("tmux error: {e:?}");
+            }
         };
         if next.is_some() {
             self.handle_message(next.unwrap());

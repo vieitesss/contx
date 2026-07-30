@@ -1,5 +1,3 @@
-use super::message::Message;
-use crate::{fuzzy, theme::Theme};
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
@@ -8,6 +6,8 @@ use ratatui::{
     widgets::{Block, Paragraph, Widget},
 };
 use terminal_colorsaurus::ThemeMode;
+
+use crate::{fuzzy, theme::Theme, tmux, tui::message::Message, utils};
 
 pub const NORMAL_STYLE: Style = Style::new();
 
@@ -60,6 +60,15 @@ impl SessionsList {
                 let l = self.matches.len();
                 if l > 0 {
                     self.selected_line = l;
+                }
+            }
+            Message::SelectSession => {
+                let entry = &self.matches[self.selected_line - 1].entry;
+                let session_name = utils::path_to_tmux_session_name(entry);
+                if let Err(e) = tmux::open(&session_name, entry) {
+                    return Some(Message::TmuxError(e));
+                } else {
+                    return Some(Message::Exit);
                 }
             }
             _ => {}
