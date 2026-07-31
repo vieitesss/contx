@@ -1,4 +1,3 @@
-use log::debug;
 use ratatui::{
     buffer::Buffer,
     layout::Rect,

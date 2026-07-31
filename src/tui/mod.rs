@@ -7,7 +7,7 @@ use crate::{
 };
 use message::Message;
 use ratatui::{
-    DefaultTerminal, Frame,
+    DefaultTerminal,
     buffer::Buffer,
     layout::{Constraint, Direction, Layout, Rect},
     style::Style,
