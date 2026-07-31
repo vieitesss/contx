@@ -64,13 +64,3 @@ pub fn open(session_name: &str, path: &str) -> Result<()> {
 
     Ok(())
 }
-
-// pub fn sessions() -> Result<Vec<TmuxSession>> {
-//     if !is_tmux_process() {
-//         return Err(TmuxError::NotInTmux);
-//     }
-//
-//     let output: String = tmux_command(&["list-sessions"])?;
-//
-//     Ok(sessions::parse(&output))
-// }
