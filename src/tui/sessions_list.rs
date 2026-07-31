@@ -1,9 +1,10 @@
+use log::debug;
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
     style::Style,
     text::{Line, Span},
-    widgets::{Block, Paragraph, Widget},
+    widgets::{Block, Paragraph, StatefulWidget, Widget},
 };
 use terminal_colorsaurus::ThemeMode;
 
@@ -12,11 +13,19 @@ use crate::{fuzzy, theme::Theme, tmux, tui::message::Message, utils};
 pub const NORMAL_STYLE: Style = Style::new();
 
 #[derive(Default, Debug, Clone)]
+pub enum SelectionDirection {
+    Up,
+    #[default]
+    Down,
+}
+
+#[derive(Default, Debug, Clone)]
 pub struct SessionsList {
     pub paths: Vec<String>,
     matches: Vec<fuzzy::Match>,
     filtering: String,
     selected_line: usize, // 1-indexed
+    selection_dir: SelectionDirection,
 }
 
 impl SessionsList {
@@ -27,6 +36,7 @@ impl SessionsList {
             matches: fuzzy::search(paths, ""),
             filtering: String::new(),
             selected_line: 1,
+            selection_dir: SelectionDirection::default(),
         }
     }
 
@@ -41,25 +51,30 @@ impl SessionsList {
                 let l = self.matches.len();
                 if l < self.selected_line && l > 0 {
                     self.selected_line = l;
+                    self.selection_dir = SelectionDirection::Up;
                 }
             }
             Message::NextSession => {
                 if self.selected_line < self.matches.len() {
                     self.selected_line += 1;
+                    self.selection_dir = SelectionDirection::Down;
                 }
             }
             Message::PrevSession => {
                 if self.selected_line > 1 {
                     self.selected_line -= 1;
+                    self.selection_dir = SelectionDirection::Up;
                 }
             }
             Message::FirstSession => {
                 self.selected_line = 1;
+                self.selection_dir = SelectionDirection::Up;
             }
             Message::LastSession => {
                 let l = self.matches.len();
                 if l > 0 {
                     self.selected_line = l;
+                    self.selection_dir = SelectionDirection::Down;
                 }
             }
             Message::SelectSession => {
@@ -129,130 +144,81 @@ impl SessionsList {
 
         line
     }
+}
 
-    pub fn render(&self, area: Rect, buf: &mut Buffer, theme_mode: ThemeMode) {
-        let lines: Vec<Line> = self
-            .matches
+pub struct SessionsListState {
+    pub scroll_y: u16,
+    pub scroll_offset: u16,
+    pub theme_mode: ThemeMode,
+}
+
+impl SessionsListState {
+    pub fn new(scroll_offset: u16, theme_mode: ThemeMode) -> Self {
+        Self {
+            scroll_y: 0,
+            scroll_offset: scroll_offset,
+            theme_mode: theme_mode,
+        }
+    }
+    pub fn update_scroll(
+        &mut self,
+        height: u16,
+        matches: &[fuzzy::Match],
+        selected_line: u16,
+    ) {
+        let visible_lines = height.saturating_sub(2);
+        if visible_lines == 0 {
+            return;
+        }
+
+        let matches_len = matches.len() as u16;
+        // never bigger than the window
+        let offset =
+            self.scroll_offset.min(visible_lines.saturating_sub(1) / 2);
+        let max_scroll = matches_len.saturating_sub(visible_lines);
+
+        if selected_line < self.scroll_y + 1 + offset {
+            self.scroll_y = selected_line.saturating_sub(offset + 1);
+        } else if selected_line
+            > self.scroll_y + visible_lines.saturating_sub(offset)
+        {
+            self.scroll_y =
+                selected_line - visible_lines.saturating_sub(offset);
+        }
+        self.scroll_y = self.scroll_y.min(max_scroll);
+    }
+}
+
+impl StatefulWidget for &SessionsList {
+    type State = SessionsListState;
+
+    fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
+        let m = self.matches.clone();
+        let lines: Vec<Line> = m
             .iter()
             .enumerate()
             .map(|(i, m)| {
-                self.format_line(m, i + 1 == self.selected_line, theme_mode)
+                self.format_line(
+                    m,
+                    i + 1 == self.selected_line,
+                    state.theme_mode,
+                )
             })
             .collect();
 
+        state.update_scroll(
+            area.height,
+            &self.matches,
+            self.selected_line as u16,
+        );
+
         Paragraph::new(lines)
             .block(Block::bordered())
+            .scroll((state.scroll_y, 0))
             .render(area, buf);
     }
 }
 
 #[cfg(test)]
-mod tests {
-
-    use super::SessionsList;
-    use crate::{fuzzy, theme::Theme};
-    use ratatui::{
-        style::Style,
-        text::{Line, Span},
-    };
-    use terminal_colorsaurus::ThemeMode;
-
-    const THEME_MODE: ThemeMode = ThemeMode::Light;
-    const HL: Style = Style::new().fg(Theme::LIGHT.accent);
-
-    #[test]
-    fn segments() {
-        let idxs: Vec<usize> = vec![0, 1, 3, 5, 6, 7, 9, 11];
-        let seg = SessionsList::get_hl_segments(&idxs);
-        assert_eq![vec![(0, 1), (3, 3), (5, 7), (9, 9), (11, 11)], seg];
-
-        let idxs: Vec<usize> = vec![2, 3, 4, 5, 6, 7, 9, 10];
-        let seg = SessionsList::get_hl_segments(&idxs);
-        assert_eq![vec![(2, 7), (9, 10)], seg];
-
-        let idxs: Vec<usize> = vec![3, 6, 9];
-        let seg = SessionsList::get_hl_segments(&idxs);
-        assert_eq![vec![(3, 3), (6, 6), (9, 9)], seg];
-    }
-
-    #[test]
-    fn formatting_1() {
-        let m = fuzzy::Match {
-            entry: String::from("/user/vieites/opt/zerobrew"),
-            match_indices: vec![18],
-        };
-        let sl = SessionsList::default();
-        let l = sl.format_line(&m, false, THEME_MODE);
-        assert_eq!(
-            Line::from(vec![
-                Span::from("/user/vieites/opt/").style(super::NORMAL_STYLE),
-                Span::from("z").style(HL),
-                Span::from("erobrew").style(super::NORMAL_STYLE),
-            ]),
-            l
-        );
-
-        let m = fuzzy::Match {
-            entry: String::from("/user/ze"),
-            match_indices: vec![7],
-        };
-        let l = sl.format_line(&m, false, THEME_MODE);
-        assert_eq!(
-            Line::from(vec![
-                Span::from("/user/z").style(super::NORMAL_STYLE),
-                Span::from("e").style(HL),
-                Span::default(),
-            ]),
-            l
-        );
-
-        let m = fuzzy::Match {
-            entry: String::from("/user/ze"),
-            match_indices: vec![0],
-        };
-        let l = sl.format_line(&m, false, THEME_MODE);
-        assert_eq!(
-            Line::from(vec![
-                Span::default(),
-                Span::from("/").style(HL),
-                Span::from("user/ze").style(super::NORMAL_STYLE),
-            ]),
-            l
-        );
-    }
-
-    #[test]
-    fn formatting_2() {
-        let m = fuzzy::Match {
-            entry: String::from("/user/vieites/opt/zerobrew"),
-            match_indices: vec![18, 19],
-        };
-
-        let sl = SessionsList::default();
-        let l = sl.format_line(&m, false, THEME_MODE);
-        assert_eq!(
-            Line::from(vec![
-                Span::from("/user/vieites/opt/").style(super::NORMAL_STYLE),
-                Span::from("ze").style(HL),
-                Span::from("robrew").style(super::NORMAL_STYLE),
-            ]),
-            l
-        );
-
-        let m = fuzzy::Match {
-            entry: String::from("/user/vieites/opt/zerobrew"),
-            match_indices: vec![18, 24],
-        };
-        let l = sl.format_line(&m, false, THEME_MODE);
-        assert_eq!(
-            Line::from(vec![
-                Span::from("/user/vieites/opt/").style(super::NORMAL_STYLE),
-                Span::from("z").style(HL),
-                Span::from("erobr").style(super::NORMAL_STYLE),
-                Span::from("e").style(HL),
-                Span::from("w").style(super::NORMAL_STYLE),
-            ]),
-            l
-        );
-    }
-}
+#[path = "sessions_list_tests.rs"]
+mod tests;

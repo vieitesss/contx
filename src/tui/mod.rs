@@ -2,14 +2,16 @@ mod message;
 mod search;
 mod sessions_list;
 
-use crate::{config::Config, theme::Theme};
+use crate::{
+    config::Config, theme::Theme, tui::sessions_list::SessionsListState,
+};
 use message::Message;
 use ratatui::{
     DefaultTerminal, Frame,
     buffer::Buffer,
     layout::{Constraint, Direction, Layout, Rect},
     style::Style,
-    widgets::Widget,
+    widgets::{StatefulWidget, Widget},
 };
 use search::Search;
 use sessions_list::SessionsList;
@@ -19,6 +21,7 @@ use terminal_colorsaurus::ThemeMode;
 pub struct Tui {
     exit: bool,
     sessions_list: SessionsList,
+    sessions_list_state: SessionsListState,
     search: Search,
     theme_mode: ThemeMode,
 }
@@ -31,6 +34,7 @@ impl Tui {
             exit: false,
             search: Search::default(),
             sessions_list: SessionsList::new(&paths),
+            sessions_list_state: SessionsListState::new(3, theme_mode),
             theme_mode: theme_mode,
         }
     }
@@ -64,8 +68,8 @@ impl Tui {
         }
     }
 
-    fn render(&self, frame: &mut Frame) {
-        frame.render_widget(self, frame.area());
+    fn render(&mut self, area: Rect, buf: &mut Buffer) {
+        Widget::render(self, area, buf);
     }
 
     fn exit(&mut self) {
@@ -74,14 +78,15 @@ impl Tui {
 
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> io::Result<()> {
         while !self.exit {
-            terminal.draw(|frame| self.render(frame))?;
+            terminal
+                .draw(|frame| self.render(frame.area(), frame.buffer_mut()))?;
             self.handle_events()?;
         }
         Ok(())
     }
 }
 
-impl Widget for &Tui {
+impl Widget for &mut Tui {
     fn render(self, area: Rect, buf: &mut Buffer) {
         // ━search━━
         // ┏list━━━┓
@@ -89,8 +94,7 @@ impl Widget for &Tui {
         // ┃       ┃
         // ┗━━━━━━━┛
 
-        let constraints =
-            vec![Constraint::Length(1), Constraint::Percentage(20)];
+        let constraints = vec![Constraint::Length(1), Constraint::Fill(1)];
 
         let areas = Layout::default()
             .direction(Direction::Vertical)
@@ -101,6 +105,7 @@ impl Widget for &Tui {
         buf.set_style(area, Style::new().bg(t.bg).fg(t.fg));
 
         self.search.render(areas[0], buf, self.theme_mode);
-        self.sessions_list.render(areas[1], buf, self.theme_mode);
+        self.sessions_list
+            .render(areas[1], buf, &mut self.sessions_list_state);
     }
 }
