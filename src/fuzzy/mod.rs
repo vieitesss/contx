@@ -150,7 +150,7 @@ fn find_indices(entry: &str, query: &str) -> Option<Match> {
     })
 }
 
-pub fn search(entries: &[&str], query: &str) -> Vec<Match> {
+pub fn search(entries: &[String], query: &str) -> Vec<Match> {
     entries
         .iter()
         .filter_map(|e| find_indices(e, query))

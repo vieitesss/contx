@@ -28,7 +28,7 @@ pub struct SessionsList {
 }
 
 impl SessionsList {
-    pub fn new(paths: &[&str]) -> Self {
+    pub fn new(paths: &[String]) -> Self {
         let ps: Vec<String> = paths.iter().map(|p| p.to_string()).collect();
         Self {
             paths: ps,
@@ -42,9 +42,7 @@ impl SessionsList {
     pub fn handle_message(&mut self, m: Message) -> Option<Message> {
         match m {
             Message::FilterSessions(s) => {
-                let ps: Vec<_> =
-                    self.paths.iter().map(String::as_str).collect();
-                self.matches = fuzzy::search(&ps, &s);
+                self.matches = fuzzy::search(&self.paths, &s);
                 self.filtering = s.to_string();
 
                 let l = self.matches.len();

@@ -28,9 +28,8 @@ fn main() -> io::Result<()> {
 
     match config::parse() {
         Ok(c) => {
-            let paths = if let Some(p) = c.paths { p } else { vec![] };
-            let p = paths.iter().map(String::as_str).collect::<Vec<&str>>();
-            ratatui::run(|terminal| Tui::new(&p, theme_mode).run(terminal))?;
+            let paths = c.paths.unwrap_or_default();
+            ratatui::run(|terminal| Tui::new(&paths, theme_mode).run(terminal))?;
         }
         Err(e) => {
             eprintln!("{e}");

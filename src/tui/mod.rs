@@ -27,7 +27,7 @@ pub struct Tui {
 }
 
 impl Tui {
-    pub fn new(paths: &[&str], theme_mode: ThemeMode) -> Self {
+    pub fn new(paths: &[String], theme_mode: ThemeMode) -> Self {
         Tui {
             exit: false,
             search: Search::default(),
