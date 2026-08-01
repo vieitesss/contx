@@ -1,6 +1,5 @@
 mod error;
 
-use log::debug;
 use serde::Deserialize;
 use shellexpand;
 use std::{env, fs, io, path::Path};
@@ -74,7 +73,7 @@ fn normalize_path(path: &str) -> Result<Vec<String>> {
     Err(ConfigError::PathIsNotValid(path.to_string()))
 }
 
-fn normalize_paths(paths: &[&str]) -> Result<Vec<String>> {
+fn normalize_paths(paths: &[String]) -> Result<Vec<String>> {
     let mut ps = vec![];
     for p in paths.iter() {
         ps.append(&mut normalize_path(p)?);
@@ -141,8 +140,6 @@ pub fn parse() -> Result<Config> {
     config = match toml::from_str::<Config>(&content) {
         Ok(c) => {
             let paths = if let Some(paths) = c.paths {
-                let paths: Vec<&str> =
-                    paths.iter().map(String::as_str).collect();
                 let norm_paths = normalize_paths(&paths)?;
                 Some(norm_paths)
             } else {
