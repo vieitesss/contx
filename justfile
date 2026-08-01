@@ -8,4 +8,4 @@ build:
 
 run: build
     @echo
-    RUST_LOG=debug ./target/debug/{{executable}}
+    RUST_LOG=debug ./target/debug/{{executable}} -c ~/personal/contx/config.toml

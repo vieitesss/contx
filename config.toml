@@ -19,10 +19,12 @@
 # The entry "~/*" show:
 #  - /home/<user>/another/nested
 #  - /home/<user>/another/again
-
 paths = [
-    "$HOME/personal",
+    # "$HOME/personal",
     "~/.config",
     "$HOME/opt/",
     "$HOME/work/*",
 ]
+
+# Whether to show the git repositories that exist
+git-from-home = true

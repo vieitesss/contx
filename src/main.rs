@@ -6,15 +6,12 @@ mod tui;
 mod utils;
 
 use env_logger::{Builder, Target};
-use std::fs::OpenOptions;
-use std::io;
-use std::process::exit;
+use std::{fs::OpenOptions, io, process::exit};
 use terminal_colorsaurus::{QueryOptions, theme_mode};
 
 use tui::Tui;
 
 pub const LOG_FILE: &str = "app.log";
-pub const DEFAULT_CONFIG_FILE: &str = "~/personal/contx/config.toml";
 
 fn main() -> io::Result<()> {
     let file = OpenOptions::new()
@@ -27,12 +24,13 @@ fn main() -> io::Result<()> {
         .target(Target::Pipe(Box::new(file)))
         .init();
 
-    let config_path = DEFAULT_CONFIG_FILE;
     let theme_mode = theme_mode(QueryOptions::default()).unwrap();
 
-    match config::parse(config_path) {
+    match config::parse() {
         Ok(c) => {
-            ratatui::run(|terminal| Tui::new(c, theme_mode).run(terminal))?;
+            let paths = if let Some(p) = c.paths { p } else { vec![] };
+            let p = paths.iter().map(String::as_str).collect::<Vec<&str>>();
+            ratatui::run(|terminal| Tui::new(&p, theme_mode).run(terminal))?;
         }
         Err(e) => {
             eprintln!("{e}");

@@ -27,13 +27,11 @@ pub struct Tui {
 }
 
 impl Tui {
-    pub fn new(c: Config, theme_mode: ThemeMode) -> Self {
-        let paths: Vec<&str> = c.paths.iter().map(String::as_str).collect();
-
+    pub fn new(paths: &[&str], theme_mode: ThemeMode) -> Self {
         Tui {
             exit: false,
             search: Search::default(),
-            sessions_list: SessionsList::new(&paths),
+            sessions_list: SessionsList::new(paths),
             sessions_list_state: SessionsListState::new(3, theme_mode),
             theme_mode: theme_mode,
         }
