@@ -1,5 +1,4 @@
 pub mod errors;
-pub mod sessions;
 
 use std::{
     env,
@@ -58,9 +57,8 @@ pub fn open(session_name: &str, path: &str) -> Result<()> {
 
     if let Err(_) = has_session(session_name) {
         new_session(session_name, path)?;
-    } else {
-        switch_client(session_name)?;
     }
+    switch_client(session_name)?;
 
     Ok(())
 }

@@ -162,7 +162,7 @@ impl SessionsListState {
     pub fn update_scroll(
         &mut self,
         height: u16,
-        matches: &[fuzzy::Match],
+        matches_len: u16,
         selected_line: u16,
     ) {
         let visible_lines = height.saturating_sub(2);
@@ -170,7 +170,7 @@ impl SessionsListState {
             return;
         }
 
-        let matches_len = matches.len() as u16;
+        let matches_len = matches_len;
         // never bigger than the window
         let offset =
             self.scroll_offset.min(visible_lines.saturating_sub(1) / 2);
@@ -207,7 +207,7 @@ impl StatefulWidget for &SessionsList {
 
         state.update_scroll(
             area.height,
-            &self.matches,
+            self.matches.len() as u16,
             self.selected_line as u16,
         );
 
