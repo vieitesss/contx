@@ -1,3 +1,5 @@
+use std::cmp::Ordering;
+
 #[derive(Default, Debug, Clone, PartialEq)]
 pub struct Match {
     pub entry: String,
@@ -150,11 +152,48 @@ fn find_indices(entry: &str, query: &str) -> Option<Match> {
     })
 }
 
+// Character index of the char starting at `byte` (byte offsets in
+// `match_indices` must stay byte-based for highlighting).
+fn char_index(entry: &str, byte: usize) -> usize {
+    entry[..byte].chars().count()
+}
+
+// Span of the selected match in characters, for relevance ranking.
+fn match_span(m: &Match) -> usize {
+    let first = m.match_indices.first().copied().unwrap_or(0);
+    let last = m.match_indices.last().copied().unwrap_or(0);
+    char_index(&m.entry, last) - char_index(&m.entry, first)
+}
+
+// Byte offset where the basename (last `/`-delimited component) starts.
+fn basename_start(entry: &str) -> usize {
+    entry.rfind('/').map(|i| i + 1).unwrap_or(0)
+}
+
+// Whether the selected span is fully contained in the basename.
+fn span_in_basename(m: &Match) -> bool {
+    let first = m.match_indices.first().copied().unwrap_or(0);
+    first >= basename_start(&m.entry)
+}
+
+fn rank_cmp(a: &Match, b: &Match) -> Ordering {
+    match_span(a)
+        .cmp(&match_span(b))
+        .then_with(|| span_in_basename(b).cmp(&span_in_basename(a)))
+        .then_with(|| a.entry.chars().count().cmp(&b.entry.chars().count()))
+        .then_with(|| a.entry.to_lowercase().cmp(&b.entry.to_lowercase()))
+        .then_with(|| a.entry.cmp(&b.entry))
+}
+
 pub fn search(entries: &[String], query: &str) -> Vec<Match> {
-    entries
+    let mut matches: Vec<Match> = entries
         .iter()
         .filter_map(|e| find_indices(e, query))
-        .collect()
+        .collect();
+    if !query.is_empty() {
+        matches.sort_by(rank_cmp);
+    }
+    matches
 }
 
 #[cfg(test)]
@@ -254,5 +293,70 @@ mod tests {
         let e = "héllo";
         let res = fuzzy::find_indices(e, "e");
         assert_eq!(None, res);
+    }
+
+    fn search_entries(entries: &[&str], query: &str) -> Vec<String> {
+        let owned: Vec<String> =
+            entries.iter().map(|e| e.to_string()).collect();
+        fuzzy::search(&owned, query)
+            .iter()
+            .map(|m| m.entry.clone())
+            .collect()
+    }
+
+    #[test]
+    fn rank_smaller_span_wins() {
+        let res = search_entries(&["/x/azb", "/y/ab"], "ab");
+        assert_eq!(vec!["/y/ab", "/x/azb"], res);
+    }
+
+    #[test]
+    fn rank_basename_containment_beats_elsewhere_at_equal_span() {
+        // All three matches have span 2: "/x/azb" in the basename,
+        // "/azb/x" in the parent, "/x/a/b" across the boundary.
+        let res = search_entries(&["/x/a/b", "/azb/x", "/x/azb"], "ab");
+        assert_eq!(vec!["/x/azb", "/azb/x", "/x/a/b"], res);
+    }
+
+    #[test]
+    fn rank_path_length_counts_chars_not_bytes() {
+        // Equal byte length (6), but "/é/ab" has fewer chars (5 vs 6).
+        let res = search_entries(&["/xx/ab", "/é/ab"], "ab");
+        assert_eq!(vec!["/é/ab", "/xx/ab"], res);
+    }
+
+    #[test]
+    fn rank_case_insensitive_then_exact_case() {
+        let res = search_entries(
+            &["/a/xab", "/Zebra/xab", "/apple/yab", "/A/xab"],
+            "ab",
+        );
+        assert_eq!(vec!["/A/xab", "/a/xab", "/apple/yab", "/Zebra/xab"], res);
+    }
+
+    #[test]
+    fn rank_span_uses_chars_not_bytes() {
+        // "aéb" spans 2 chars but 3 bytes; ranking by byte span would
+        // tie with "/azzb" and push it behind the basename-contained
+        // match.
+        let res = search_entries(&["/azzb", "/aéb/x"], "ab");
+        assert_eq!(vec!["/aéb/x", "/azzb"], res);
+
+        // Same disagreement with the multibyte char in the basename;
+        // a byte span would tie and the shorter path would win.
+        let res = search_entries(&["/azzb", "/xxxxx/aéb"], "ab");
+        assert_eq!(vec!["/xxxxx/aéb", "/azzb"], res);
+    }
+
+    #[test]
+    fn empty_query_preserves_candidate_order() {
+        let res = search_entries(&["/zeta", "/alpha", "/mid"], "");
+        assert_eq!(vec!["/zeta", "/alpha", "/mid"], res);
+    }
+
+    #[test]
+    fn matching_stays_case_sensitive() {
+        let res = search_entries(&["/x/ab", "/x/AB", "/x/cd"], "ab");
+        assert_eq!(vec!["/x/ab"], res);
     }
 }

@@ -21,3 +21,5 @@
 - **Git repository**: A directory that contains a `.git` directory or a `.git` file (linked worktree).
 - **home repository discovery**: Inspecting only the immediate child directories of `$HOME` for Git repositories.
 - **tmux command boundary**: The subprocess call that executes tmux and converts its output or failure into `TmuxError`.
+- **session candidate**: Any directory made available through configured-path expansion or discovery.
+- **search result**: A session candidate matching the current query, together with match information.

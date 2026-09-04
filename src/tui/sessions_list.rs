@@ -75,6 +75,9 @@ impl SessionsList {
                 }
             }
             Message::SelectSession => {
+                if self.matches.is_empty() {
+                    return None;
+                }
                 let entry = &self.matches[self.selected_line - 1].entry;
                 let session_name = utils::path_to_tmux_session_name(entry);
                 if let Err(e) = tmux::open(&session_name, entry) {

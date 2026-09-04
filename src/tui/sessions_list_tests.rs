@@ -1,8 +1,8 @@
 use super::SessionsList;
-use crate::{fuzzy, theme::Theme};
+use crate::{fuzzy, theme::Theme, tui::message::Message};
 use ratatui::{
     style::Style,
-    text::{Span, Line},
+    text::{Line, Span},
 };
 use terminal_colorsaurus::ThemeMode;
 
@@ -103,4 +103,71 @@ fn formatting_2() {
         ]),
         l
     );
+}
+
+fn list(paths: &[&str]) -> SessionsList {
+    let owned: Vec<String> = paths.iter().map(|p| p.to_string()).collect();
+    SessionsList::new(&owned)
+}
+
+#[test]
+fn selection_row_kept_across_reorder() {
+    let mut sl = list(&["/x/azb", "/y/ab"]);
+    sl.handle_message(Message::NextSession);
+    assert_eq!(2, sl.selected_line);
+
+    // "ab" ranks "/y/ab" (span 1) before "/x/azb" (span 2): the
+    // numeric row must not follow the entry to its new position.
+    sl.handle_message(Message::FilterSessions("ab".to_string()));
+    assert_eq!(2, sl.selected_line);
+}
+
+#[test]
+fn selection_clamps_when_nonzero_results_shrink() {
+    let mut sl = list(&["/x/za", "/y/za", "/z/zb"]);
+    sl.handle_message(Message::LastSession);
+    assert_eq!(3, sl.selected_line);
+
+    sl.handle_message(Message::FilterSessions("zb".to_string()));
+    assert_eq!(1, sl.selected_line);
+}
+
+#[test]
+fn selection_row_kept_at_zero_results() {
+    let mut sl = list(&["/x/za", "/y/za"]);
+    sl.handle_message(Message::LastSession);
+    assert_eq!(2, sl.selected_line);
+
+    sl.handle_message(Message::FilterSessions("qq".to_string()));
+    assert_eq!(2, sl.selected_line);
+}
+
+#[test]
+fn select_at_zero_results_is_noop() {
+    let mut sl = list(&["/x/za", "/y/za"]);
+    sl.handle_message(Message::LastSession);
+    sl.handle_message(Message::FilterSessions("qq".to_string()));
+
+    let res = sl.handle_message(Message::SelectSession);
+    assert!(res.is_none());
+    assert_eq!(2, sl.selected_line);
+}
+
+#[test]
+fn selection_row_kept_or_clamped_when_results_return() {
+    let mut sl = list(&["/x/za", "/y/zb"]);
+    sl.handle_message(Message::LastSession);
+    assert_eq!(2, sl.selected_line);
+
+    // Zero results keep the stored row.
+    sl.handle_message(Message::FilterSessions("qq".to_string()));
+    assert_eq!(2, sl.selected_line);
+
+    // Two results again: row 2 is still valid and kept.
+    sl.handle_message(Message::FilterSessions("z".to_string()));
+    assert_eq!(2, sl.selected_line);
+
+    // One result: the stored row clamps down to it.
+    sl.handle_message(Message::FilterSessions("zb".to_string()));
+    assert_eq!(1, sl.selected_line);
 }
