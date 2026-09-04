@@ -2,9 +2,7 @@ mod message;
 mod search;
 mod sessions_list;
 
-use crate::{
-    config::Config, theme::Theme, tui::sessions_list::SessionsListState,
-};
+use crate::{theme::Theme, tui::sessions_list::SessionsListState};
 use message::Message;
 use ratatui::{
     DefaultTerminal,
