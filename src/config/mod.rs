@@ -12,6 +12,7 @@ type Result<T> = std::result::Result<T, ConfigError>;
 pub struct Config {
     pub paths: Option<Vec<String>>,
     pub config_file: Option<String>,
+    #[serde(rename = "git-from-home")]
     pub git_from_home: Option<bool>,
 }
 
@@ -20,7 +21,7 @@ impl Default for Config {
         Self {
             paths: Default::default(),
             config_file: Some(String::from("~/.config/contx/config.toml")),
-            git_from_home: Some(true),
+            git_from_home: None,
         }
     }
 }
@@ -89,67 +90,152 @@ fn next_not_empty_arg(args: &mut env::Args) -> Result<String> {
     }
 }
 
-fn parse_args(config: &mut Config) -> Result<()> {
+fn set_config_file(config: &mut Config, arg: &str) -> Result<()> {
+    let p: String = match shellexpand::full(arg) {
+        Ok(o) => String::from(o),
+        Err(e) => {
+            return Err(ConfigError::PathHasInvalidEnv(
+                e.cause,
+                e.var_name,
+                arg.to_string(),
+            ));
+        }
+    };
+    if !Path::new(&p).exists() {
+        return Err(ConfigError::PathIsNotValid(arg.to_string()));
+    }
+    config.config_file = Some(p);
+    Ok(())
+}
+
+fn parse_args(config: &mut Config) -> Result<bool> {
     let mut args = env::args();
+    let mut explicit_config_file = false;
 
     args.next(); // the script
     while let Some(a) = args.next() {
         match a.as_str() {
             "--config-file" | "-c" => {
                 let config_file = next_not_empty_arg(&mut args)?;
-                let p = Path::new(&config_file);
-                if !p.exists() {
-                    return Err(ConfigError::PathIsNotValid(config_file));
-                }
-                config.config_file = Some(config_file);
+                set_config_file(config, &config_file)?;
+                explicit_config_file = true;
             }
             _ => return Err(ConfigError::ArgIsNotValid(a)),
         }
     }
 
-    Ok(())
+    Ok(explicit_config_file)
+}
+
+fn is_git_repository(dir: &Path) -> bool {
+    dir.join(".git").exists()
+}
+
+fn discover_git_repos(home: &Path) -> Result<Vec<String>> {
+    let entries = match home.read_dir() {
+        Ok(entries) => entries,
+        Err(e) => {
+            return Err(ConfigError::IoError(
+                e,
+                home.display().to_string(),
+            ));
+        }
+    };
+
+    let mut repos: Vec<String> = entries
+        .filter_map(std::result::Result::ok)
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+        .map(|e| e.path())
+        .filter(|p| is_git_repository(p))
+        .map(|p| p.display().to_string())
+        .collect();
+
+    repos.sort();
+
+    Ok(repos)
+}
+
+fn git_repos_from_home() -> Result<Vec<String>> {
+    let home = std::env::var_os("HOME").unwrap_or_default();
+    if home.is_empty() {
+        return Err(ConfigError::HomeIsNotSet);
+    }
+
+    discover_git_repos(Path::new(&home))
+}
+
+fn identity(path: &str) -> String {
+    match Path::new(path).canonicalize() {
+        Ok(c) => c.display().to_string(),
+        Err(_) => path.to_string(),
+    }
+}
+
+fn merge_paths(
+    configured: Vec<String>,
+    discovered: Vec<String>,
+) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    configured
+        .into_iter()
+        .chain(discovered)
+        .filter(|p| seen.insert(identity(p)))
+        .collect()
+}
+
+fn load_config(config_file: &str, explicit: bool) -> Result<Config> {
+    let p: String = match shellexpand::full(config_file) {
+        Ok(o) => String::from(o),
+        Err(e) => {
+            return Err(ConfigError::IoError(
+                io::Error::new(io::ErrorKind::NotFound, e),
+                config_file.to_string(),
+            ));
+        }
+    };
+
+    let content = match fs::read_to_string(&p) {
+        Ok(c) => c,
+        Err(e) => {
+            if e.kind() == io::ErrorKind::NotFound && !explicit {
+                return Ok(Config::default());
+            }
+            return Err(ConfigError::IoError(e, config_file.to_string()));
+        }
+    };
+
+    match toml::from_str::<Config>(&content) {
+        Ok(c) => {
+            let paths = if let Some(p) = c.paths {
+                normalize_paths(&p)?
+            } else {
+                vec![]
+            };
+            let git_repos = if let Some(ok) = c.git_from_home && ok {
+                git_repos_from_home()?
+            } else {
+                vec![]
+            };
+
+            Ok(Config { paths: Some(merge_paths(paths, git_repos)), ..c })
+        }
+        Err(e) => Err(ConfigError::IncorrectStructure(e)),
+    }
 }
 
 pub fn parse() -> Result<Config> {
     let mut config = Config::default();
 
-    parse_args(&mut config)?;
+    let explicit_config_file = parse_args(&mut config)?;
 
-    let p: String = match shellexpand::full(
-        &config
-            .config_file
-            .clone()
-            .expect("default value should be set"),
-    ) {
-        Ok(o) => String::from(o),
-        Err(e) => {
-            return Err(ConfigError::IoError(
-                io::Error::new(io::ErrorKind::NotFound, e),
-                config.config_file.unwrap(),
-            ));
-        }
-    };
+    let config_file = config
+        .config_file
+        .clone()
+        .expect("default value should be set");
 
-    let res = fs::read_to_string(p);
-    if let Err(e) = res {
-        return Err(ConfigError::IoError(e, config.config_file.unwrap()));
-    }
-
-    let content = res.unwrap();
-
-    config = match toml::from_str::<Config>(&content) {
-        Ok(c) => {
-            let paths = if let Some(paths) = c.paths {
-                let norm_paths = normalize_paths(&paths)?;
-                Some(norm_paths)
-            } else {
-                None
-            };
-
-            Config { paths, ..c }
-        }
-        Err(e) => return Err(ConfigError::IncorrectStructure(e)),
-    };
-
-    Ok(config)
+    load_config(&config_file, explicit_config_file)
 }
+
+#[cfg(test)]
+#[path = "config_tests.rs"]
+mod tests;

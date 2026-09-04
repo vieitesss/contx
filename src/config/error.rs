@@ -6,6 +6,7 @@ pub enum ConfigError {
     IncorrectStructure(toml::de::Error),
     ArgIsNotValid(String),
     ArgNotFound,
+    HomeIsNotSet,
     PathHasInvalidEnv(std::env::VarError, String, String),
     PathIsNotAbsolute(String),
     PathIsNotDirectory(String),
@@ -23,6 +24,7 @@ impl error::Error for ConfigError {
             ConfigError::PathIsNotValid(_) => None,
             ConfigError::ArgIsNotValid(_) => None,
             ConfigError::ArgNotFound => None,
+            ConfigError::HomeIsNotSet => None,
         }
     }
 }
@@ -53,6 +55,9 @@ impl fmt::Display for ConfigError {
             }
             ConfigError::ArgNotFound => {
                 write!(f, "an argument was expected but wasn't found")
+            }
+            ConfigError::HomeIsNotSet => {
+                write!(f, "$HOME is not set")
             }
         }
     }

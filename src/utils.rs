@@ -37,35 +37,49 @@ pub fn path_to_tmux_session_name(path: &str) -> String {
 }
 
 #[cfg(test)]
-mod test {
-    use super::path_to_tmux_session_name;
-    use shellexpand;
+pub mod test_utils {
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
-    static HOME_LOCK: Mutex<()> = Mutex::new(());
+    /// Serializes environment mutations across all test modules.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+    static TEMP_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
     /// A temporary directory that cleans itself up on drop.
-    struct TempDir(PathBuf);
+    pub struct TempDir(PathBuf);
 
     impl TempDir {
-        fn new() -> Self {
-            let dir = std::env::temp_dir()
-                .join(format!("contx_test_{}", std::process::id()));
+        pub fn new() -> Self {
+            let n = TEMP_COUNTER.fetch_add(1, Ordering::SeqCst);
+            let dir = std::env::temp_dir().join(format!(
+                "contx_test_{}_{n}",
+                std::process::id()
+            ));
             let _ = fs::remove_dir_all(&dir);
             fs::create_dir_all(&dir).unwrap();
             TempDir(dir)
         }
 
         /// Create a child directory at `path` (e.g. "work/something") and return its full path.
-        fn child(&self, path: &str) -> PathBuf {
+        pub fn child(&self, path: &str) -> PathBuf {
             let p = self.0.join(path);
             fs::create_dir_all(&p).unwrap();
             p
         }
 
-        fn path(&self) -> &Path {
+        /// Write a file at `path` (creating parents) and return its full path.
+        pub fn file(&self, path: &str, content: &str) -> PathBuf {
+            let p = self.0.join(path);
+            if let Some(parent) = p.parent() {
+                fs::create_dir_all(parent).unwrap();
+            }
+            fs::write(&p, content).unwrap();
+            p
+        }
+
+        pub fn path(&self) -> &Path {
             &self.0
         }
     }
@@ -77,9 +91,9 @@ mod test {
     }
 
     /// Set `$HOME` to `home` for the duration of `f`, then restore the original.
-    fn with_home(home: &Path, f: impl FnOnce()) {
-        let _lock = HOME_LOCK.lock().unwrap();
-        // SAFETY: serialized by HOME_LOCK; test-only.
+    pub fn with_home(home: &Path, f: impl FnOnce()) {
+        let _lock = ENV_LOCK.lock().unwrap();
+        // SAFETY: serialized by ENV_LOCK; test-only.
         let old = std::env::var_os("HOME");
         unsafe { std::env::set_var("HOME", home) };
         f();
@@ -88,6 +102,25 @@ mod test {
             None => unsafe { std::env::remove_var("HOME") },
         }
     }
+
+    /// Unset `$HOME` for the duration of `f`, then restore the original.
+    pub fn without_home(f: impl FnOnce()) {
+        let _lock = ENV_LOCK.lock().unwrap();
+        // SAFETY: serialized by ENV_LOCK; test-only.
+        let old = std::env::var_os("HOME");
+        unsafe { std::env::remove_var("HOME") };
+        f();
+        if let Some(v) = old {
+            unsafe { std::env::set_var("HOME", v) };
+        }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::path_to_tmux_session_name;
+    use super::test_utils::{TempDir, with_home};
+    use std::fs;
 
     #[test]
     fn path_to_tmux_session_name_test() {

@@ -18,4 +18,6 @@
 - **branch extraction**: Relocating the current branch from its original worktree into a new worktree. The original worktree must be clean and switches to a chosen return branch.
 - **return branch**: The branch left in the original worktree during branch extraction. `contx` suggests the previous named branch, then the repository default branch, while allowing the user to choose another eligible branch.
 - **observed resource**: A session, window, pane, Git repository or worktree, or agent process discovered by `contx`. Its disappearance is accepted as current state; `contx` does not recreate it automatically.
+- **Git repository**: A directory that contains a `.git` directory or a `.git` file (linked worktree).
+- **home repository discovery**: Inspecting only the immediate child directories of `$HOME` for Git repositories.
 - **tmux command boundary**: The subprocess call that executes tmux and converts its output or failure into `TmuxError`.
