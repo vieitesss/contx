@@ -3,7 +3,15 @@ use std::cmp::Ordering;
 #[derive(Default, Debug, Clone, PartialEq)]
 pub struct Match {
     pub entry: String,
-    pub match_indices: Vec<usize>,
+    /// Byte ranges (start inclusive, end exclusive) of each matched
+    /// character, in order. Every bound aligns to a UTF-8 character
+    /// boundary, so rendering can slice the entry without knowing how
+    /// many bytes each character occupies.
+    pub match_ranges: Vec<(usize, usize)>,
+}
+
+fn chars_eq(a: char, b: char) -> bool {
+    a.eq_ignore_ascii_case(&b)
 }
 
 fn find_first_match(
@@ -17,8 +25,9 @@ fn find_first_match(
 
     while query_idx < query_len {
         let qc = query_chars[query_idx];
-        if let Some(off) =
-            entry_chars[entry_idx..].iter().position(|&c| c == qc)
+        if let Some(off) = entry_chars[entry_idx..]
+            .iter()
+            .position(|&c| chars_eq(c, qc))
         {
             entry_idx += off;
             found.push(entry_idx);
@@ -57,7 +66,7 @@ fn tighten_span(
     let mut query_idx = query_len - 1;
 
     for entry_i in (0..=entry_idx).rev() {
-        if entry_chars[entry_i] != query_chars[query_idx] {
+        if !chars_eq(entry_chars[entry_i], query_chars[query_idx]) {
             continue;
         }
         candidate.push(entry_i);
@@ -100,7 +109,7 @@ fn find_best_match(
     let mut query_idx = query_len - 1;
 
     while entry_idx < entry_len {
-        if entry_chars[entry_idx] == query_chars[query_idx] {
+        if chars_eq(entry_chars[entry_idx], query_chars[query_idx]) {
             candidate = tighten_span(&entry_chars, &query_chars, entry_idx);
 
             entry_idx = candidate[query_len - 1];
@@ -122,7 +131,7 @@ fn find_indices(entry: &str, query: &str) -> Option<Match> {
     if query == "" {
         return Some(Match {
             entry: entry.to_string(),
-            match_indices: vec![],
+            match_ranges: vec![],
         });
     }
 
@@ -143,26 +152,30 @@ fn find_indices(entry: &str, query: &str) -> Option<Match> {
         first_match[first_match_len - 1], // last entry index from first match
         first_match[first_match_len - 1] - first_match[0], // current span
     );
-    let byte_offset: Vec<_> = entry.char_indices().map(|(i, _)| i).collect();
-    let final_indices: Vec<_> = best.iter().map(|i| byte_offset[*i]).collect();
+    let byte_start: Vec<_> = entry.char_indices().map(|(i, _)| i).collect();
+    let final_ranges: Vec<_> = best
+        .iter()
+        .map(|&char_idx| {
+            let start = byte_start[char_idx];
+            let end =
+                byte_start.get(char_idx + 1).copied().unwrap_or(entry.len());
+            (start, end)
+        })
+        .collect();
 
     Some(Match {
         entry: entry.to_string(),
-        match_indices: final_indices,
+        match_ranges: final_ranges,
     })
 }
 
-// Character index of the char starting at `byte` (byte offsets in
-// `match_indices` must stay byte-based for highlighting).
-fn char_index(entry: &str, byte: usize) -> usize {
-    entry[..byte].chars().count()
-}
-
-// Span of the selected match in characters, for relevance ranking.
+// Span of the selected match in characters, for relevance ranking. Both
+// bounds start a matched character, so the slice between them holds exactly
+// the spanned characters.
 fn match_span(m: &Match) -> usize {
-    let first = m.match_indices.first().copied().unwrap_or(0);
-    let last = m.match_indices.last().copied().unwrap_or(0);
-    char_index(&m.entry, last) - char_index(&m.entry, first)
+    let first = m.match_ranges.first().map(|(s, _)| *s).unwrap_or(0);
+    let last = m.match_ranges.last().map(|(s, _)| *s).unwrap_or(0);
+    m.entry[first..last].chars().count()
 }
 
 // Byte offset where the basename (last `/`-delimited component) starts.
@@ -172,7 +185,7 @@ fn basename_start(entry: &str) -> usize {
 
 // Whether the selected span is fully contained in the basename.
 fn span_in_basename(m: &Match) -> bool {
-    let first = m.match_indices.first().copied().unwrap_or(0);
+    let first = m.match_ranges.first().map(|(s, _)| *s).unwrap_or(0);
     first >= basename_start(&m.entry)
 }
 
@@ -207,7 +220,7 @@ mod tests {
         let res = fuzzy::find_indices(e, q);
         assert_ne!(None, res);
         let m = res.unwrap();
-        assert_eq!(vec![6], m.match_indices);
+        assert_eq!(vec![(6, 7)], m.match_ranges);
 
         q = "zea";
         let res = fuzzy::find_indices(e, q);
@@ -217,66 +230,66 @@ mod tests {
         let res = fuzzy::find_indices(e, "ab");
         assert_ne!(None, res);
         let m = res.unwrap();
-        assert_eq!(vec![4, 5], m.match_indices);
+        assert_eq!(vec![(4, 5), (5, 6)], m.match_ranges);
 
         let e = "a......a.b....c.";
         let res = fuzzy::find_indices(e, "abc");
         assert_ne!(None, res);
         let m = res.unwrap();
-        assert_eq!(vec![7, 9, 14], m.match_indices);
+        assert_eq!(vec![(7, 8), (9, 10), (14, 15)], m.match_ranges);
 
         let e = "aaeaaeaeaeeaezerobeee";
         let res = fuzzy::find_indices(e, "eee");
         assert_ne!(None, res);
         let m = res.unwrap();
-        assert_eq!(vec![18, 19, 20], m.match_indices);
+        assert_eq!(vec![(18, 19), (19, 20), (20, 21)], m.match_ranges);
 
         let e = "aaeaaeaeaeeaezerobee";
         let res = fuzzy::find_indices(e, "aa");
         assert_ne!(None, res);
         let m = res.unwrap();
-        assert_eq!(vec![3, 4], m.match_indices);
+        assert_eq!(vec![(3, 4), (4, 5)], m.match_ranges);
 
         let e = "aaeaaeaeaeeaezerobee";
         let res = fuzzy::find_indices(e, "eee");
         assert_ne!(None, res);
         let m = res.unwrap();
-        assert_eq!(vec![9, 10, 12], m.match_indices);
+        assert_eq!(vec![(9, 10), (10, 11), (12, 13)], m.match_ranges);
 
         let e = "hello/zero";
         let res = fuzzy::find_indices(e, "ze");
         assert_ne!(None, res);
         let m = res.unwrap();
-        assert_eq!(vec![6, 7], m.match_indices);
+        assert_eq!(vec![(6, 7), (7, 8)], m.match_ranges);
 
         let res = fuzzy::find_indices(e, "ze");
         assert_ne!(None, res);
         let m = res.unwrap();
-        assert_eq!(vec![6, 7], m.match_indices);
+        assert_eq!(vec![(6, 7), (7, 8)], m.match_ranges);
 
         let e = "/user/vieites/opt/zerobrew";
         let res = fuzzy::find_indices(e, "ze");
         assert_ne!(None, res);
         let m = res.unwrap();
-        assert_eq!(vec![18, 19], m.match_indices);
+        assert_eq!(vec![(18, 19), (19, 20)], m.match_ranges);
 
         let res = fuzzy::find_indices(e, "e");
         assert_ne!(None, res);
         let m = res.unwrap();
-        assert_eq!(vec![24], m.match_indices);
+        assert_eq!(vec![(24, 25)], m.match_ranges);
 
         q = "ee";
         let res = fuzzy::find_indices(e, q);
         assert_ne!(None, res);
         let m = res.unwrap();
-        assert_eq!(vec![8, 11], m.match_indices);
+        assert_eq!(vec![(8, 9), (11, 12)], m.match_ranges);
 
         let e = "/user/vieites/opt/zerobrew";
         let q = "zer";
         let res = fuzzy::find_indices(e, q);
         assert_ne!(None, res);
         let m = res.unwrap();
-        assert_eq!(vec![18, 19, 20], m.match_indices);
+        assert_eq!(vec![(18, 19), (19, 20), (20, 21)], m.match_ranges);
     }
 
     #[test]
@@ -287,8 +300,8 @@ mod tests {
         let res = fuzzy::find_indices(e, "ze");
         assert_ne!(None, res);
         let m = res.unwrap();
-        assert_eq!(vec![7, 8], m.match_indices);
-        assert_eq!("ze", &e[m.match_indices[0]..=m.match_indices[1]]);
+        assert_eq!(vec![(7, 8), (8, 9)], m.match_ranges);
+        assert_eq!("ze", &e[m.match_ranges[0].0..m.match_ranges[1].1]);
 
         let e = "héllo";
         let res = fuzzy::find_indices(e, "e");
@@ -355,8 +368,21 @@ mod tests {
     }
 
     #[test]
-    fn matching_stays_case_sensitive() {
+    fn matching_is_case_insensitive() {
         let res = search_entries(&["/x/ab", "/x/AB", "/x/cd"], "ab");
+        assert_eq!(vec!["/x/AB", "/x/ab"], res);
+
+        let res = search_entries(&["/x/ab", "/x/cd"], "AB");
         assert_eq!(vec!["/x/ab"], res);
+
+        let owned = vec!["/Users".to_string()];
+        let matches = fuzzy::search(&owned, "users");
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].entry, "/Users");
+        assert_eq!(
+            matches[0].match_ranges,
+            vec![(1, 2), (2, 3), (3, 4), (4, 5), (5, 6)]
+        );
+        assert_eq!(&matches[0].entry[1..2], "U");
     }
 }

@@ -2,63 +2,237 @@ pub mod errors;
 
 use std::{
     env,
+    ffi::OsString,
     io::{self, ErrorKind::InvalidData},
+    path::Path,
     process::Command,
 };
 
-use errors::TmuxError;
+use errors::{ActivationError, TmuxError};
 
-pub type Result<T> = std::result::Result<T, TmuxError>;
-
-fn tmux_command(args: &[&str]) -> Result<String> {
-    let output = Command::new("tmux").args(args).output()?;
-
-    if !output.status.success() {
-        return Err(TmuxError::CommandFailed(io::Error::other(
-            String::from_utf8_lossy(&output.stderr).to_owned(),
-        )));
-    }
-
-    String::from_utf8(output.stdout)
-        .map_err(|err| TmuxError::IoError(io::Error::new(InvalidData, err)))
+/// Deliberate success outcome of activating a session candidate.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Activation {
+    /// The tmux session name derived from the candidate and attached to.
+    pub session: String,
 }
 
-fn is_tmux_process() -> bool {
-    if let Ok(value) = env::var("TMUX") {
-        return value != "";
-    }
-
-    false
+/// Narrow internal seam at the tmux command boundary: execute one tmux
+/// argv. Production runs the external program; tests script results.
+trait CommandRunner {
+    fn run(&mut self, args: &[&str]) -> io::Result<RawOutput>;
 }
 
-pub fn normalize_session_name(name: &str) -> String {
+/// One tmux process invocation, before classification.
+#[derive(Debug, Clone, PartialEq)]
+struct RawOutput {
+    success: bool,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+}
+
+struct ProductionRunner;
+
+impl CommandRunner for ProductionRunner {
+    fn run(&mut self, args: &[&str]) -> io::Result<RawOutput> {
+        let output = Command::new("tmux").args(args).output()?;
+        Ok(RawOutput {
+            success: output.status.success(),
+            stdout: output.stdout,
+            stderr: output.stderr,
+        })
+    }
+}
+
+/// Classified result of one tmux invocation.
+#[derive(Debug)]
+enum CommandResult {
+    Success,
+    SessionAbsent { detail: String },
+    Failed(TmuxError),
+}
+
+/// Interpret one invocation. Launch failures, unexpected exits, and invalid
+/// output are failures; an exit that authoritatively reports no such
+/// session is absence.
+fn classify(result: io::Result<RawOutput>) -> CommandResult {
+    let output = match result {
+        Ok(output) => output,
+        Err(e) => return CommandResult::Failed(TmuxError::IoError(e)),
+    };
+    if output.success {
+        if String::from_utf8(output.stdout).is_err() {
+            return CommandResult::Failed(TmuxError::IoError(io::Error::new(
+                InvalidData,
+                "tmux printed invalid UTF-8",
+            )));
+        }
+        return CommandResult::Success;
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    if is_session_absent(&stderr) {
+        return CommandResult::SessionAbsent { detail: stderr };
+    }
+    CommandResult::Failed(TmuxError::CommandFailed(io::Error::other(stderr)))
+}
+
+/// Whether stderr authoritatively reports no such session, covering tmux's
+/// historical wordings.
+fn is_session_absent(stderr: &str) -> bool {
+    let lower = stderr.to_lowercase();
+    lower.contains("can't find session")
+        || lower.contains("couldn't find session")
+        || lower.contains("session not found")
+}
+
+fn is_tmux_process(env: &dyn Fn(&str) -> Option<OsString>) -> bool {
+    matches!(env("TMUX"), Some(value) if !value.is_empty())
+}
+
+fn normalize_session_name(name: &str) -> String {
     name.replace(".", "_")
 }
 
-fn switch_client(session: &str) -> Result<()> {
-    tmux_command(&["switch-client", "-t", session])?;
-    Ok(())
-}
+/// Derive the tmux session name from a session candidate path, following
+/// the current path-based rules. Fails deliberately instead of panicking
+/// when the path has no usable file name or the environment lacks the
+/// variables the rules need.
+pub(crate) fn session_name(
+    candidate: &str,
+    env: &dyn Fn(&str) -> Option<OsString>,
+) -> Result<String, ActivationError> {
+    let invalid = || ActivationError::InvalidCandidate(candidate.to_string());
+    let p = Path::new(candidate);
+    let basename = p
+        .file_name()
+        .ok_or_else(invalid)?
+        .to_string_lossy()
+        .into_owned();
+    let parent_path = p.parent().ok_or_else(invalid)?;
+    let parent_dir = parent_path
+        .file_name()
+        .ok_or_else(invalid)?
+        .to_string_lossy()
+        .into_owned();
+    let home = env("HOME")
+        .ok_or_else(invalid)?
+        .to_string_lossy()
+        .into_owned();
 
-fn new_session(session: &str, path: &str) -> Result<()> {
-    tmux_command(&["new-session", "-ds", session, "-c", path])?;
-    Ok(())
-}
-
-fn has_session(session: &str) -> Result<()> {
-    tmux_command(&["has-session", "-t", session])?;
-    Ok(())
-}
-
-pub fn open(session_name: &str, path: &str) -> Result<()> {
-    if !is_tmux_process() {
-        return Err(TmuxError::NotInTmux);
+    let final_name: String;
+    if parent_path.strip_prefix(&home).is_ok() {
+        let grandparent = parent_path.parent().ok_or_else(invalid)?;
+        if grandparent
+            .strip_prefix(&home)
+            .is_ok_and(|res| res.is_empty())
+        {
+            let user = env("USER")
+                .ok_or_else(invalid)?
+                .to_string_lossy()
+                .into_owned();
+            if parent_dir != user {
+                final_name = vec![&parent_dir, "_", &basename].join("");
+            } else {
+                final_name = basename;
+            }
+        } else {
+            final_name = vec![&parent_dir, "_", &basename].join("");
+        }
+    } else {
+        final_name = basename
     }
 
-    if let Err(_) = has_session(session_name) {
-        new_session(session_name, path)?;
-    }
-    switch_client(session_name)?;
-
-    Ok(())
+    Ok(normalize_session_name(&final_name))
 }
+
+fn has_session(runner: &mut dyn CommandRunner, session: &str) -> CommandResult {
+    classify(runner.run(&["has-session", "-t", session]))
+}
+
+fn new_session(
+    runner: &mut dyn CommandRunner,
+    session: &str,
+    path: &str,
+) -> CommandResult {
+    classify(runner.run(&["new-session", "-ds", session, "-c", path]))
+}
+
+fn switch_client(
+    runner: &mut dyn CommandRunner,
+    session: &str,
+) -> CommandResult {
+    classify(runner.run(&["switch-client", "-t", session]))
+}
+
+/// Activate the tmux session for the selected session candidate, deriving
+/// the session name from the candidate path. An existing session is checked
+/// then switched; an initially absent session is checked, created at the
+/// candidate path, then switched. Any failure stops the sequence with its
+/// meaning preserved for the caller.
+pub fn open(candidate: &str) -> Result<Activation, ActivationError> {
+    open_with(candidate, &mut ProductionRunner, &|name| env::var_os(name))
+}
+
+/// Activation policy over an injected command runner and environment, so
+/// tests can script command sequences deterministically.
+fn open_with(
+    candidate: &str,
+    runner: &mut dyn CommandRunner,
+    env: &dyn Fn(&str) -> Option<OsString>,
+) -> Result<Activation, ActivationError> {
+    if !is_tmux_process(env) {
+        return Err(ActivationError::NotInTmux);
+    }
+
+    let session = session_name(candidate, env)?;
+
+    match has_session(runner, &session) {
+        CommandResult::Failed(cause) => {
+            Err(ActivationError::CheckFailed { session, cause })
+        }
+        CommandResult::SessionAbsent { .. } => {
+            create_then_switch(runner, candidate, session)
+        }
+        CommandResult::Success => switch(runner, session),
+    }
+}
+
+fn create_then_switch(
+    runner: &mut dyn CommandRunner,
+    candidate: &str,
+    session: String,
+) -> Result<Activation, ActivationError> {
+    match new_session(runner, &session, candidate) {
+        CommandResult::Success => switch(runner, session),
+        CommandResult::SessionAbsent { detail } => {
+            Err(ActivationError::CreateFailed {
+                session,
+                cause: TmuxError::CommandFailed(io::Error::other(detail)),
+            })
+        }
+        CommandResult::Failed(cause) => {
+            Err(ActivationError::CreateFailed { session, cause })
+        }
+    }
+}
+
+/// Switch to an observed session. Absence at switch time means the observed
+/// resource disappeared; it is reported, never recreated.
+fn switch(
+    runner: &mut dyn CommandRunner,
+    session: String,
+) -> Result<Activation, ActivationError> {
+    match switch_client(runner, &session) {
+        CommandResult::Success => Ok(Activation { session }),
+        CommandResult::SessionAbsent { .. } => {
+            Err(ActivationError::SessionDisappeared { session })
+        }
+        CommandResult::Failed(cause) => {
+            Err(ActivationError::SwitchFailed { session, cause })
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "tmux_tests.rs"]
+mod tests;
