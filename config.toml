@@ -24,6 +24,7 @@ paths = [
     "~/.config",
     "$HOME/opt/",
     "$HOME/work/*",
+    "$HOME/personal",
 ]
 
 # Whether to show the git repositories that exist
