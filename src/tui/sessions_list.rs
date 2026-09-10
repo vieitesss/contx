@@ -142,13 +142,13 @@ fn carry_abbreviated(
     let mut carried: Vec<(usize, usize)> = vec![];
     if display == entry {
         carried.extend_from_slice(ranges);
-    } else if let Some(tail) = display.strip_prefix('~') {
-        if entry.ends_with(tail) {
-            let base = entry.len() - tail.len();
-            for &(s, e) in ranges {
-                if s >= base {
-                    carried.push((s - base + 1, e - base + 1));
-                }
+    } else if let Some(tail) = display.strip_prefix('~')
+        && entry.ends_with(tail)
+    {
+        let base = entry.len() - tail.len();
+        for &(s, e) in ranges {
+            if s >= base {
+                carried.push((s - base + 1, e - base + 1));
             }
         }
     }
@@ -174,10 +174,10 @@ fn finish_highlight(
         .collect();
     let mut hits: Vec<usize> = vec![];
     for (s, e) in carried {
-        if let Ok(idx) = starts.binary_search(s) {
-            if starts.get(idx + 1) == Some(e) {
-                hits.push(idx);
-            }
+        if let Ok(idx) = starts.binary_search(s)
+            && starts.get(idx + 1) == Some(e)
+        {
+            hits.push(idx);
         }
     }
     let (visible, at) = shape_path(display, max);
@@ -555,21 +555,25 @@ pub struct SessionsListState {
     /// An empty order (hand-built states) falls back to
     /// first-seen match order.
     pub(crate) group_order: Vec<String>,
-    /// Groups currently rendered folded: header only, no
-    /// children. All groups start folded; a non-empty query
-    /// auto-unfolds groups with a remainder hit and keeps
-    /// prefix-only matching groups folded; empty groups stay
-    /// hidden. Clearing the query refolds everything. Manual
-    /// expand/collapse is NOT persisted across query changes
-    /// — the query recompute always overrides.
-    pub(crate) folded: HashSet<String>,
-    /// Index into `group_order` when a folded header is the
-    /// focused visual target. `None` when a child entry is
-    /// focused (the normal case). A folded header is a single
-    /// selectable row: Enter/Right/Space expands, Left is a
-    /// no-op; on a child, Left collapses the parent group and
-    /// lands here.
-    pub(crate) active_header: Option<usize>,
+    /// Visible runs currently rendered folded: header only, no
+    /// children. Keyed `(group_key, run)` where `run` is the
+    /// nth `place_children` appearance of that key (0 when the
+    /// query is empty or the group is prefix-only and unsplit).
+    /// All groups start folded at run 0; a non-empty query
+    /// auto-unfolds remainder-hit groups (no run listed) and
+    /// keeps prefix-only matching groups folded at run 0;
+    /// empty groups stay hidden. Clearing the query refolds
+    /// everything at run 0. Manual expand/collapse is NOT
+    /// persisted across query changes — the query recompute
+    /// always overrides.
+    pub(crate) folded: HashSet<(String, usize)>,
+    /// Focused folded header: `(group_order index, run)`.
+    /// `run` distinguishes repeated headers of the same group
+    /// key under a non-empty query. `None` when a child entry
+    /// is focused. Enter/Right/Space expands; Left on a header
+    /// is a no-op; Left on a child collapses the parent and
+    /// lands on that child's containing run.
+    pub(crate) active_header: Option<(usize, usize)>,
     /// Group key of home-repository discovery, if any surviving
     /// candidate still carries `from_home_discovery`. Prefix-only
     /// headers skip this key; remainder-hit and empty-query
@@ -749,6 +753,7 @@ fn remainder_rank_order(
             .is_some_and(|members| is_nested(matches, members, git, i))
     };
     let mut tops_of: HashMap<String, Vec<usize>> = HashMap::new();
+    #[allow(clippy::needless_range_loop)]
     for i in 0..matches.len() {
         if rem.contains(&i) && !nested_at(i) {
             tops_of.entry(keys[i].clone()).or_default().push(i);
@@ -756,6 +761,7 @@ fn remainder_rank_order(
     }
     let mut ordered = vec![];
     let mut attached = vec![false; matches.len()];
+    #[allow(clippy::needless_range_loop)]
     for i in 0..matches.len() {
         if !rem.contains(&i) || nested_at(i) {
             continue;
@@ -781,6 +787,7 @@ fn remainder_rank_order(
             }
         }
     }
+    #[allow(clippy::needless_range_loop)]
     for i in 0..matches.len() {
         if rem.contains(&i) && nested_at(i) && !attached[i] {
             ordered.push((i, None));
@@ -792,6 +799,7 @@ fn remainder_rank_order(
 /// Consecutive runs of the same group key over a rank-ordered
 /// remainder list. The same key may appear more than once when
 /// other groups interleave.
+#[allow(clippy::type_complexity)]
 fn split_group_runs(
     keys: &[String],
     ordered: Vec<(usize, Option<usize>)>,
@@ -817,7 +825,7 @@ fn place_ordered_kids<'a>(
     let last_top = ordered
         .iter()
         .filter_map(|(i, p)| p.is_none().then_some(*i))
-        .last();
+        .next_back();
     let mut nest_total: HashMap<usize, usize> = HashMap::new();
     for (_, parent) in &ordered {
         if let Some(p) = parent {
@@ -963,12 +971,72 @@ fn place_children<'a>(
     out
 }
 
+/// Each `place_children` bucket tagged with its occurrence
+/// index: `run` is the nth appearance of that group key,
+/// counting folded and unfolded runs alike.
+fn placed_runs<'a>(
+    sel: &'a Selection,
+    state: &SessionsListState,
+) -> Vec<(String, usize, Vec<PlacedChild<'a>>)> {
+    let mut seen: HashMap<String, usize> = HashMap::new();
+    place_children(
+        sel.matches(),
+        &state.groups,
+        &state.git,
+        &state.group_order,
+        sel.candidates(),
+        state.home_discovery_group.as_deref(),
+        sel.query().is_empty(),
+    )
+    .into_iter()
+    .map(|(key, kids)| {
+        let run = {
+            let slot = seen.entry(key.clone()).or_insert(0);
+            let this = *slot;
+            *slot += 1;
+            this
+        };
+        (key, run, kids)
+    })
+    .collect()
+}
+
+/// Placed `(group key, run)` identities after the current Git
+/// snapshot, including unfolded runs. Used to drop stale folds.
+pub(crate) fn placed_run_keys(
+    sel: &Selection,
+    state: &SessionsListState,
+) -> Vec<(String, usize)> {
+    placed_runs(sel, state)
+        .into_iter()
+        .map(|(key, run, _)| (key, run))
+        .collect()
+}
+
+/// `(group key, run)` of the placed occurrence that contains
+/// `entry`. `run` matches the identity used by `folded` and
+/// `VisualTarget::Header`.
+pub(crate) fn group_run_for_entry(
+    sel: &Selection,
+    state: &SessionsListState,
+    entry: &str,
+) -> Option<(String, usize)> {
+    for (key, run, kids) in placed_runs(sel, state) {
+        if kids.iter().any(|kid| kid.m.entry == entry) {
+            return Some((key, run));
+        }
+    }
+    None
+}
+
 /// Visible stops in navigation order: folded headers plus
 /// children of unfolded groups, or plain match order without
 /// the group map. Unfolded headers stay off this walk, so
 /// Up/Down land on a folded header or a child, never a blank
 /// and never an open header. Header indices are into
-/// `group_order`.
+/// `group_order`, plus a run index for the nth `place_children`
+/// occurrence of that group (folded or not), so a repeated
+/// header of the same group is its own stop.
 pub(crate) fn visual_entries(
     sel: &Selection,
     state: &SessionsListState,
@@ -981,19 +1049,11 @@ pub(crate) fn visual_entries(
             .collect();
     }
     let mut out = vec![];
-    for (key, kids) in place_children(
-        sel.matches(),
-        &state.groups,
-        &state.git,
-        &state.group_order,
-        sel.candidates(),
-        state.home_discovery_group.as_deref(),
-        sel.query().is_empty(),
-    ) {
-        if state.folded.contains(&key) {
+    for (key, run, kids) in placed_runs(sel, state) {
+        if state.folded.contains(&(key.clone(), run)) {
             if let Some(idx) = state.group_order.iter().position(|g| g == &key)
             {
-                out.push(VisualTarget::Header(idx));
+                out.push(VisualTarget::Header(idx, run));
             }
             continue;
         }
@@ -1023,7 +1083,9 @@ pub(crate) enum VisualMotion {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum VisualTarget {
     Child(String),
-    Header(usize),
+    /// Folded header: `group_order` index and run among
+    /// `place_children` occurrences of that group (0 for the first).
+    Header(usize, usize),
 }
 
 /// Apply one visual motion by landing on the neighbor stop.
@@ -1040,7 +1102,7 @@ pub(crate) fn apply_visual_motion(
         return None;
     }
     let current = match state.active_header {
-        Some(idx) => Some(VisualTarget::Header(idx)),
+        Some((idx, run)) => Some(VisualTarget::Header(idx, run)),
         None => sel
             .matches()
             .get(sel.selected_line().saturating_sub(1))
@@ -1059,8 +1121,8 @@ pub(crate) fn apply_visual_motion(
             state.active_header = None;
             sel.select_entry(entry);
         }
-        VisualTarget::Header(idx) => {
-            state.active_header = Some(*idx);
+        VisualTarget::Header(idx, run) => {
+            state.active_header = Some((*idx, *run));
         }
     }
     Some(landed)
@@ -1083,7 +1145,7 @@ pub(crate) fn apply_query_folds(
     let mut all: HashSet<String> = state.group_order.iter().cloned().collect();
     all.extend(state.groups.values().cloned());
     if sel.query().is_empty() {
-        state.folded = all;
+        state.folded = all.into_iter().map(|g| (g, 0)).collect();
         state.active_header = None;
         return;
     }
@@ -1101,7 +1163,11 @@ pub(crate) fn apply_query_folds(
                 .then_some(key)
         })
         .collect();
-    state.folded = all.into_iter().filter(|g| !remainder.contains(g)).collect();
+    state.folded = all
+        .into_iter()
+        .filter(|g| !remainder.contains(g))
+        .map(|g| (g, 0))
+        .collect();
     state.active_header = None;
     apply_visual_motion(sel, state, VisualMotion::First);
 }
@@ -1109,38 +1175,34 @@ pub(crate) fn apply_query_folds(
 /// Unfold the focused folded header and select its first child.
 /// No-op when no header is focused.
 pub(crate) fn expand_group(state: &mut SessionsListState, sel: &mut Selection) {
-    let Some(idx) = state.active_header else {
+    let Some((idx, run)) = state.active_header else {
         return;
     };
     let Some(key) = state.group_order.get(idx).cloned() else {
         return;
     };
-    state.folded.remove(&key);
+    state.folded.remove(&(key.clone(), run));
     state.active_header = None;
-    let first = visual_entries(sel, state)
+    let first = placed_runs(sel, state)
         .into_iter()
-        .find_map(|t| match t {
-            VisualTarget::Child(entry) => {
-                let g = state
-                    .groups
-                    .get(&entry)
-                    .map(String::as_str)
-                    .unwrap_or(entry.as_str());
-                (g == key).then_some(entry)
-            }
-            VisualTarget::Header(_) => None,
-        });
+        .find(|(k, r, _)| *k == key && *r == run)
+        .and_then(|(_, _, kids)| kids.into_iter().next())
+        .map(|kid| kid.m.entry.clone());
     if let Some(entry) = first {
         sel.select_entry(&entry);
     }
 }
 
-/// Fold `group_key` and land focus on that header when it is
-/// in `group_order`.
-pub(crate) fn collapse_group(state: &mut SessionsListState, group_key: &str) {
-    state.folded.insert(group_key.to_string());
+/// Fold the `(group_key, run)` occurrence and land focus on
+/// that header when the key is in `group_order`.
+pub(crate) fn collapse_group(
+    state: &mut SessionsListState,
+    group_key: &str,
+    run: usize,
+) {
+    state.folded.insert((group_key.to_string(), run));
     if let Some(idx) = state.group_order.iter().position(|g| g == group_key) {
-        state.active_header = Some(idx);
+        state.active_header = Some((idx, run));
     }
 }
 
@@ -1291,6 +1353,7 @@ fn blank_line(width: usize, theme: Theme) -> Line<'static> {
 /// key, remainder and collapsed `$HOME` hits drop. Folded
 /// headers add a `(N)` match count and take the selection tint
 /// when focused; unfolded headers stay untinted and unselectable.
+#[allow(clippy::too_many_arguments)]
 fn header_line(
     group: &str,
     home: Option<&str>,
@@ -1353,6 +1416,7 @@ fn header_line(
 /// paints plain. Budgets are content cells after the indent: the
 /// path keeps the full remaining width and the Git line compacts
 /// inside its own.
+#[allow(clippy::too_many_arguments)]
 fn render_item(
     x: u16,
     y: u16,
@@ -1502,26 +1566,20 @@ fn render_grouped(
         render_empty(area, buf, sel, theme);
         return;
     }
-    let placed = place_children(
-        matches,
-        &state.groups,
-        &state.git,
-        &state.group_order,
-        sel.candidates(),
-        state.home_discovery_group.as_deref(),
-        sel.query().is_empty(),
-    );
+    let placed = placed_runs(sel, state);
     let sel_idx = sel.selected_line().saturating_sub(1);
     let home = state.home.as_deref();
     let mut lines: Vec<Line<'static>> = vec![];
     let (mut sel_start, mut sel_end) = (0, 0);
-    for (gi, (group, kids)) in placed.iter().enumerate() {
+    for (gi, (group, run, kids)) in placed.iter().enumerate() {
         if gi > 0 {
             lines.push(blank_line(width, theme));
         }
-        let folded = state.folded.contains(group);
+        let folded = state.folded.contains(&(group.clone(), *run));
         let header_idx = state.group_order.iter().position(|g| g == group);
-        let header_selected = folded && state.active_header == header_idx;
+        let header_selected = folded
+            && header_idx
+                .is_some_and(|idx| state.active_header == Some((idx, *run)));
         if header_selected {
             sel_start = lines.len();
         }

@@ -1,11 +1,13 @@
 use super::{
-    CandidateState, GitOps, GitStates, Head, RootResolve, ScanResult, Upstream,
-    WorkState, candidate_state, fmt_count, measurable_texts, resolve_root,
-    scan_head, scan_upstream, scan_worktree, start_poll_with,
+    CandidateState, CommandRunner, GitOps, GitStates, Head, RawOutput,
+    RootResolve, ScanResult, Upstream, WorkState, candidate_state, fmt_count,
+    measurable_texts, resolve_root, resolve_root_with, scan_head,
+    scan_upstream, scan_worktree, scan_worktree_with, start_poll_with,
 };
 use crate::utils::test_utils::TempDir;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet, VecDeque},
+    io::{self, ErrorKind},
     path::{Path, PathBuf},
     process::Command,
     sync::{
@@ -1386,4 +1388,445 @@ fn progressive_poll_applies_through_last_known() {
     );
     assert_eq!(states.get("/plain"), Some(&known(None, WorkState::Clean)));
     assert_eq!(states.get("/missing"), None);
+}
+
+struct ScriptRunner {
+    script: VecDeque<io::Result<RawOutput>>,
+    calls: Vec<(String, Vec<String>)>,
+}
+
+impl ScriptRunner {
+    fn new(script: Vec<io::Result<RawOutput>>) -> Self {
+        Self {
+            script: script.into(),
+            calls: vec![],
+        }
+    }
+}
+
+impl CommandRunner for ScriptRunner {
+    fn run(&mut self, root: &str, args: &[&str]) -> io::Result<RawOutput> {
+        self.calls.push((
+            root.to_string(),
+            args.iter().map(|s| s.to_string()).collect(),
+        ));
+        self.script.pop_front().expect("scripted git exhausted")
+    }
+}
+
+fn git_ok(stdout: &str) -> io::Result<RawOutput> {
+    Ok(RawOutput {
+        success: true,
+        stdout: stdout.as_bytes().to_vec(),
+    })
+}
+
+fn git_fail() -> io::Result<RawOutput> {
+    Ok(RawOutput {
+        success: false,
+        stdout: vec![],
+    })
+}
+
+fn git_launch_err() -> io::Result<RawOutput> {
+    Err(io::Error::new(ErrorKind::NotFound, "no git"))
+}
+
+fn git_utf8() -> io::Result<RawOutput> {
+    Ok(RawOutput {
+        success: true,
+        stdout: vec![0xff, 0xfe],
+    })
+}
+
+fn marked(tmp: &TempDir, name: &str, linked: bool) -> String {
+    let dir = tmp.child(name);
+    if linked {
+        std::fs::write(dir.join(".git"), "gitdir: /tmp/main/.git\n").unwrap();
+    } else {
+        std::fs::create_dir(dir.join(".git")).unwrap();
+    }
+    dir.to_str().expect("temp path is UTF-8").to_string()
+}
+
+fn porcelain(entries: &[&str]) -> String {
+    let mut s = String::new();
+    for e in entries {
+        s.push_str(e);
+        s.push('\0');
+    }
+    s
+}
+
+#[test]
+fn scripted_nonrepo_runs_no_git() {
+    let tmp = TempDir::new();
+    let path = tmp.child("plain");
+    let mut runner = ScriptRunner::new(vec![]);
+    let resolved = resolve_root_with(path.to_str().unwrap(), &mut runner);
+    assert_eq!(resolved, RootResolve::Nonrepo);
+    assert!(runner.calls.is_empty());
+}
+
+#[test]
+fn scripted_launch_failure_is_failed_inspection() {
+    let tmp = TempDir::new();
+    let root = marked(&tmp, "repo", false);
+    let mut runner = ScriptRunner::new(vec![git_launch_err()]);
+    assert_eq!(resolve_root_with(&root, &mut runner), RootResolve::Failed);
+    let mut runner = ScriptRunner::new(vec![git_launch_err()]);
+    let scan = scan_worktree_with(&root, &mut runner);
+    assert_eq!(scan.state, WorkState::Failed);
+    assert_eq!(scan.head, Head::Absent);
+    assert_eq!(scan.upstream, Upstream::Absent);
+}
+
+#[test]
+fn scripted_nonzero_and_invalid_utf8_are_failed() {
+    let tmp = TempDir::new();
+    let root = marked(&tmp, "repo", false);
+    let mut runner = ScriptRunner::new(vec![git_fail()]);
+    assert_eq!(resolve_root_with(&root, &mut runner), RootResolve::Failed);
+    let mut runner = ScriptRunner::new(vec![git_utf8()]);
+    assert_eq!(resolve_root_with(&root, &mut runner), RootResolve::Failed);
+    let mut runner = ScriptRunner::new(vec![git_fail()]);
+    assert_eq!(
+        scan_worktree_with(&root, &mut runner).state,
+        WorkState::Failed
+    );
+    let mut runner = ScriptRunner::new(vec![git_utf8()]);
+    assert_eq!(
+        scan_worktree_with(&root, &mut runner).state,
+        WorkState::Failed
+    );
+}
+
+#[test]
+fn scripted_malformed_status_is_failed_not_clean() {
+    let tmp = TempDir::new();
+    let root = marked(&tmp, "repo", false);
+    let mut runner = ScriptRunner::new(vec![git_ok("not porcelain junk")]);
+    let scan = scan_worktree_with(&root, &mut runner);
+    assert_eq!(scan.state, WorkState::Failed);
+    assert_eq!(scan.head, Head::Absent);
+}
+
+#[test]
+fn scripted_malformed_numstat_does_not_invent_counts() {
+    let tmp = TempDir::new();
+    let root = marked(&tmp, "repo", false);
+    let mut runner = ScriptRunner::new(vec![
+        git_ok(&porcelain(&[" M file.txt"])),
+        git_ok("abc\n"),
+        git_ok("not-tab-separated\n"),
+        git_ok("topic\n"),
+        git_fail(),
+    ]);
+    let scan = scan_worktree_with(&root, &mut runner);
+    assert_eq!(scan.state, WorkState::Marker);
+    assert_eq!(scan.head, Head::Named("topic".to_string()));
+    assert_eq!(scan.upstream, Upstream::Absent);
+}
+
+#[test]
+fn scripted_early_stop_after_status_is_failed() {
+    let tmp = TempDir::new();
+    let root = marked(&tmp, "repo", false);
+    let mut runner = ScriptRunner::new(vec![
+        git_ok(&porcelain(&[" M file.txt"])),
+        git_ok("abc\n"),
+        git_fail(),
+    ]);
+    let scan = scan_worktree_with(&root, &mut runner);
+    assert_eq!(scan.state, WorkState::Failed);
+    assert_eq!(scan.head, Head::Absent);
+    assert_eq!(scan.upstream, Upstream::Absent);
+    assert_eq!(runner.calls.len(), 3);
+}
+
+#[test]
+fn scripted_untracked_text_and_binary() {
+    let tmp = TempDir::new();
+    let root = marked(&tmp, "repo", false);
+    std::fs::write(Path::new(&root).join("notes.txt"), "a\nb\n").unwrap();
+    std::fs::write(Path::new(&root).join("blob.bin"), [b'a', 0, b'b']).unwrap();
+    let mut runner = ScriptRunner::new(vec![
+        git_ok(&porcelain(&["?? notes.txt", "?? blob.bin"])),
+        git_ok("abc\n"),
+        git_ok(""),
+        git_ok("topic\n"),
+        git_fail(),
+    ]);
+    let scan = scan_worktree_with(&root, &mut runner);
+    assert_eq!(
+        scan.state,
+        WorkState::Measurable {
+            added: 2,
+            deleted: 0,
+        }
+    );
+    let mut runner = ScriptRunner::new(vec![
+        git_ok(&porcelain(&["?? blob.bin"])),
+        git_ok("abc\n"),
+        git_ok(""),
+        git_ok("topic\n"),
+        git_fail(),
+    ]);
+    let scan = scan_worktree_with(&root, &mut runner);
+    assert_eq!(scan.state, WorkState::Marker);
+}
+
+#[test]
+fn scripted_odd_nul_paths_rename_submodule_conflict() {
+    let tmp = TempDir::new();
+    let root = marked(&tmp, "repo", false);
+    let tab = Path::new(&root).join("a\tb.txt");
+    std::fs::write(&tab, "x\n").unwrap();
+    let mut runner = ScriptRunner::new(vec![
+        git_ok(&porcelain(&["?? a\tb.txt"])),
+        git_ok("abc\n"),
+        git_ok(""),
+        git_ok("topic\n"),
+        git_fail(),
+    ]);
+    let scan = scan_worktree_with(&root, &mut runner);
+    assert_eq!(
+        scan.state,
+        WorkState::Measurable {
+            added: 1,
+            deleted: 0,
+        }
+    );
+
+    let mut runner = ScriptRunner::new(vec![
+        git_ok(&porcelain(&["R  new.txt", "old.txt"])),
+        git_ok("abc\n"),
+        git_ok(""),
+        git_ok("topic\n"),
+        git_fail(),
+    ]);
+    assert_eq!(
+        scan_worktree_with(&root, &mut runner).state,
+        WorkState::Marker
+    );
+
+    let mut runner = ScriptRunner::new(vec![
+        git_ok(&porcelain(&[" M sub"])),
+        git_ok("abc\n"),
+        git_ok("-\t-\tsub\n"),
+        git_ok("topic\n"),
+        git_fail(),
+    ]);
+    assert_eq!(
+        scan_worktree_with(&root, &mut runner).state,
+        WorkState::Marker
+    );
+
+    let mut runner = ScriptRunner::new(vec![
+        git_ok(&porcelain(&["UU f.txt"])),
+        git_ok("abc\n"),
+        git_ok(""),
+        git_ok("topic\n"),
+        git_fail(),
+    ]);
+    assert_eq!(
+        scan_worktree_with(&root, &mut runner).state,
+        WorkState::Marker
+    );
+}
+
+#[test]
+fn scripted_unborn_head_uses_empty_tree() {
+    let tmp = TempDir::new();
+    let root = marked(&tmp, "repo", false);
+    std::fs::write(Path::new(&root).join("a.txt"), "one\n").unwrap();
+    let mut runner = ScriptRunner::new(vec![
+        git_ok(&porcelain(&["?? a.txt"])),
+        git_fail(),
+        git_ok(""),
+        git_ok("topic\n"),
+        git_fail(),
+    ]);
+    let scan = scan_worktree_with(&root, &mut runner);
+    assert_eq!(
+        scan.state,
+        WorkState::Measurable {
+            added: 1,
+            deleted: 0,
+        }
+    );
+    assert_eq!(runner.calls[2].1[3], super::EMPTY_TREE);
+}
+
+#[test]
+fn scripted_vanished_worktree_is_failed() {
+    let tmp = TempDir::new();
+    let root = marked(&tmp, "repo", false);
+    let mut runner = ScriptRunner::new(vec![git_fail()]);
+    assert_eq!(resolve_root_with(&root, &mut runner), RootResolve::Failed);
+    let mut runner = ScriptRunner::new(vec![git_fail()]);
+    assert_eq!(
+        scan_worktree_with(&root, &mut runner).state,
+        WorkState::Failed
+    );
+}
+
+#[test]
+fn scripted_common_dir_relative_absolute_and_failed_linked() {
+    let tmp = TempDir::new();
+    let linked = marked(&tmp, "wt", true);
+    let mut runner = ScriptRunner::new(vec![
+        git_ok(&format!("{linked}\n")),
+        git_ok("false\n"),
+        git_ok("../main/.git\n"),
+    ]);
+    match resolve_root_with(&linked, &mut runner) {
+        RootResolve::Root(root, is_linked, primary) => {
+            assert!(is_linked);
+            assert_eq!(root, linked);
+            let expected =
+                Path::new(&linked).join("../main").display().to_string();
+            assert_eq!(primary.as_deref(), Some(expected.as_str()));
+        }
+        other => panic!("{other:?}"),
+    }
+
+    let mut runner = ScriptRunner::new(vec![
+        git_ok(&format!("{linked}\n")),
+        git_ok("false\n"),
+        git_ok("/abs/main/.git\n"),
+    ]);
+    match resolve_root_with(&linked, &mut runner) {
+        RootResolve::Root(_, true, primary) => {
+            assert_eq!(primary.as_deref(), Some("/abs/main"));
+        }
+        other => panic!("{other:?}"),
+    }
+
+    let mut runner = ScriptRunner::new(vec![
+        git_ok(&format!("{linked}\n")),
+        git_ok("false\n"),
+        git_fail(),
+    ]);
+    match resolve_root_with(&linked, &mut runner) {
+        RootResolve::Root(_, true, primary) => assert_eq!(primary, None),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn scripted_failed_bare_and_linked_resolve() {
+    let tmp = TempDir::new();
+    let ordinary = marked(&tmp, "repo", false);
+    let mut runner =
+        ScriptRunner::new(vec![git_ok(&format!("{ordinary}\n")), git_fail()]);
+    assert_eq!(
+        resolve_root_with(&ordinary, &mut runner),
+        RootResolve::Failed
+    );
+    let mut runner = ScriptRunner::new(vec![
+        git_ok(&format!("{ordinary}\n")),
+        git_ok("true\n"),
+    ]);
+    assert_eq!(
+        resolve_root_with(&ordinary, &mut runner),
+        RootResolve::Nonrepo
+    );
+    let linked = marked(&tmp, "wt", true);
+    let mut runner = ScriptRunner::new(vec![git_fail()]);
+    assert_eq!(resolve_root_with(&linked, &mut runner), RootResolve::Failed);
+}
+
+#[test]
+fn last_known_partial_introduces_late_linked_nesting() {
+    let mut states = GitStates::new();
+    states.apply(vec![(
+        "/main".to_string(),
+        known(Some("/main"), WorkState::Clean),
+    )]);
+    states.apply(vec![(
+        { "/linked".to_string() },
+        CandidateState {
+            root: Some("/linked".to_string()),
+            linked: true,
+            primary: Some("/main".to_string()),
+            state: WorkState::Clean,
+            head: Head::Named("side".to_string()),
+            upstream: Upstream::Absent,
+        },
+    )]);
+    assert_eq!(
+        states.get("/main"),
+        Some(&known(Some("/main"), WorkState::Clean))
+    );
+    let linked = states.get("/linked").expect("late linked published");
+    assert!(linked.linked);
+    assert_eq!(linked.primary.as_deref(), Some("/main"));
+    assert_eq!(linked.head, Head::Named("side".to_string()));
+}
+
+#[test]
+fn lagging_receiver_converges_on_newest_cumulative() {
+    let ops = instant_ops(
+        Arc::new(|c: &str| match c {
+            "/a" => root("/ra", false),
+            "/b" => root("/rb", false),
+            other => panic!("{other}"),
+        }),
+        Arc::new(|r: &str| match r {
+            "/ra" => WorkState::Clean,
+            "/rb" => WorkState::Marker,
+            other => panic!("{other}"),
+        }),
+    );
+    let rx = start_poll_with(vec!["/a".to_string(), "/b".to_string()], ops, 4);
+    // Leave the capacity-1 channel unread so later publishes lag,
+    // then drain: last-known must be the newest full snapshot.
+    std::thread::sleep(Duration::from_millis(50));
+    let mut states = GitStates::new();
+    let full = recv_full(&rx, 2);
+    states.apply(full);
+    while let Ok(snapshot) = rx.try_recv() {
+        states.apply(snapshot);
+    }
+    drop(rx);
+    assert_eq!(
+        states.get("/a").map(|s| (s.root.clone(), s.state)),
+        Some((Some("/ra".to_string()), WorkState::Clean))
+    );
+    assert_eq!(
+        states.get("/b").map(|s| (s.root.clone(), s.state)),
+        Some((Some("/rb".to_string()), WorkState::Marker))
+    );
+}
+
+#[test]
+fn git_states_retain_paths_drops_survivors_only() {
+    let mut states = GitStates::new();
+    states.apply(vec![(
+        "/a".into(),
+        CandidateState {
+            root: Some("/a".into()),
+            linked: false,
+            primary: None,
+            state: WorkState::Clean,
+            head: Head::Absent,
+            upstream: Upstream::Absent,
+        },
+    )]);
+    states.apply(vec![(
+        "/b".into(),
+        CandidateState {
+            root: Some("/b".into()),
+            linked: false,
+            primary: None,
+            state: WorkState::Clean,
+            head: Head::Absent,
+            upstream: Upstream::Absent,
+        },
+    )]);
+    let keep = HashSet::from(["/a".to_string()]);
+    states.retain_paths(&keep);
+    assert!(states.get("/a").is_some());
+    assert!(states.get("/b").is_none());
 }

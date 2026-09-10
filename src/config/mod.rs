@@ -8,8 +8,9 @@ use std::{
     fs, io,
     path::Path,
 };
+use toml_edit::{Array, DocumentMut, Item, Value};
 
-use error::ConfigError;
+pub(crate) use error::ConfigError;
 
 type Result<T> = std::result::Result<T, ConfigError>;
 
@@ -20,6 +21,8 @@ const DEFAULT_CONFIG_FILE: &str = "~/.config/contx/config.toml";
 /// Multiplexer-neutral usage, printed for `--help` / `-h`.
 pub const USAGE: &str = "\
 contx [options]
+contx [options] clone <source> <destination>
+contx [options] delete [--dry-run] [--permanent] [--force] <path>
 
   -c, --config-file <path>         configuration file
   --multiplexer auto|tmux|herdr    multiplexer (default: auto)
@@ -48,12 +51,42 @@ impl Multiplexer {
     }
 }
 
+/// What this invocation should do after configuration is loaded.
+/// Clone and delete never open the picker.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum Command {
+    #[default]
+    Picker,
+    Clone {
+        source: String,
+        destination: String,
+    },
+    Delete {
+        path: String,
+        dry_run: bool,
+        permanent: bool,
+        force: bool,
+    },
+}
+
 /// Resolved startup: session candidates plus the effective multiplexer
 /// preference (CLI wins over the config file; missing means `auto`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedConfig {
     pub candidates: Vec<SessionCandidate>,
     pub multiplexer: Multiplexer,
+    pub command: Command,
+    /// Ordinary-directory / standalone-repo / symlink deletion strategy.
+    /// Linked worktrees always use Git. Default false (trash).
+    pub permanent_delete: bool,
+    /// Expanded path of the active config file, even when the implicit
+    /// file is missing and will be created on a later write.
+    pub config_path: String,
+    /// Raw `paths` entries as spelled in the file (empty if omitted).
+    pub paths: Vec<String>,
+    pub git_from_home: bool,
+    /// False when the implicit default file was missing at load.
+    pub config_existed: bool,
 }
 
 /// Process startup after parsing arguments. Help is not an error.
@@ -66,11 +99,32 @@ pub enum Startup {
 struct CliArgs {
     config_file: Option<String>,
     multiplexer: Option<Multiplexer>,
+    command: Command,
+}
+
+/// Subcommand operands collected while walking argv.
+enum PendingCommand {
+    Picker,
+    Clone {
+        source: Option<String>,
+        destination: Option<String>,
+    },
+    Delete {
+        path: Option<String>,
+        dry_run: bool,
+        permanent: bool,
+        force: bool,
+    },
 }
 
 struct Loaded {
     candidates: Vec<SessionCandidate>,
     multiplexer: Multiplexer,
+    permanent_delete: bool,
+    config_path: String,
+    paths: Vec<String>,
+    git_from_home: bool,
+    config_existed: bool,
 }
 
 /// One resolved session candidate plus the config group it
@@ -112,6 +166,8 @@ struct RawConfig {
     #[serde(rename = "git-from-home")]
     git_from_home: Option<bool>,
     multiplexer: Option<Multiplexer>,
+    #[serde(rename = "permanent-delete")]
+    permanent_delete: Option<bool>,
 }
 
 /// Resolve startup from process-global argv and environment; the
@@ -123,7 +179,7 @@ pub fn resolve() -> Result<Startup> {
 
 /// Resolve startup from explicit arguments and an environment lookup, so
 /// tests can drive it deterministically with temporary-directory filesystems.
-fn resolve_with(
+pub(crate) fn resolve_with(
     args: &[String],
     env: &dyn Fn(&str) -> Option<OsString>,
 ) -> Result<Startup> {
@@ -137,17 +193,25 @@ fn resolve_with(
     Ok(Startup::Ready(ResolvedConfig {
         candidates: loaded.candidates,
         multiplexer: cli.multiplexer.unwrap_or(loaded.multiplexer),
+        command: cli.command,
+        permanent_delete: loaded.permanent_delete,
+        config_path: loaded.config_path,
+        paths: loaded.paths,
+        git_from_home: loaded.git_from_home,
+        config_existed: loaded.config_existed,
     }))
 }
 
 /// Parse startup arguments. `--help` / `-h` yields `None` (help). Otherwise
-/// returns the config-file path and optional CLI multiplexer override.
+/// returns the config-file path, optional CLI multiplexer override, and
+/// the command (picker, clone, or delete).
 fn parse_args(
     args: &[String],
     env: &dyn Fn(&str) -> Option<OsString>,
 ) -> Result<Option<CliArgs>> {
     let mut config_file = None;
     let mut multiplexer = None;
+    let mut pending = PendingCommand::Picker;
     let mut args = args.iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -164,13 +228,113 @@ fn parse_args(
                 let value = args.next().ok_or(ConfigError::ArgNotFound)?;
                 multiplexer = Some(Multiplexer::from_arg(value)?);
             }
-            _ => return Err(ConfigError::ArgIsNotValid(arg.clone())),
+            "clone" if matches!(pending, PendingCommand::Picker) => {
+                pending = PendingCommand::Clone {
+                    source: None,
+                    destination: None,
+                };
+            }
+            "delete" if matches!(pending, PendingCommand::Picker) => {
+                pending = PendingCommand::Delete {
+                    path: None,
+                    dry_run: false,
+                    permanent: false,
+                    force: false,
+                };
+            }
+            "--dry-run" => match &mut pending {
+                PendingCommand::Delete { dry_run, .. } => *dry_run = true,
+                _ => return Err(ConfigError::ArgIsNotValid(arg.clone())),
+            },
+            "--permanent" => match &mut pending {
+                PendingCommand::Delete { permanent, .. } => {
+                    *permanent = true;
+                }
+                _ => return Err(ConfigError::ArgIsNotValid(arg.clone())),
+            },
+            "--force" => match &mut pending {
+                PendingCommand::Delete { force, .. } => *force = true,
+                _ => return Err(ConfigError::ArgIsNotValid(arg.clone())),
+            },
+            other if other.starts_with('-') => {
+                return Err(ConfigError::ArgIsNotValid(arg.clone()));
+            }
+            other => take_operand(&mut pending, other, arg)?,
         }
     }
     Ok(Some(CliArgs {
         config_file,
         multiplexer,
+        command: finish_command(pending)?,
     }))
+}
+
+fn take_operand(
+    pending: &mut PendingCommand,
+    other: &str,
+    arg: &str,
+) -> Result<()> {
+    match pending {
+        PendingCommand::Picker => {
+            Err(ConfigError::ArgIsNotValid(arg.to_string()))
+        }
+        PendingCommand::Clone {
+            source,
+            destination,
+        } => {
+            if source.is_none() {
+                *source = Some(other.to_string());
+                Ok(())
+            } else if destination.is_none() {
+                *destination = Some(other.to_string());
+                Ok(())
+            } else {
+                Err(ConfigError::ArgIsNotValid(arg.to_string()))
+            }
+        }
+        PendingCommand::Delete { path, .. } => {
+            if path.is_none() {
+                *path = Some(other.to_string());
+                Ok(())
+            } else {
+                Err(ConfigError::ArgIsNotValid(arg.to_string()))
+            }
+        }
+    }
+}
+
+fn finish_command(pending: PendingCommand) -> Result<Command> {
+    match pending {
+        PendingCommand::Picker => Ok(Command::Picker),
+        PendingCommand::Clone {
+            source,
+            destination,
+        } => {
+            let source = source.ok_or(ConfigError::ArgNotFound)?;
+            let destination = destination.ok_or(ConfigError::ArgNotFound)?;
+            Ok(Command::Clone {
+                source,
+                destination,
+            })
+        }
+        PendingCommand::Delete {
+            path,
+            dry_run,
+            permanent,
+            force,
+        } => {
+            if force && dry_run {
+                return Err(ConfigError::ForceWithDryRun);
+            }
+            let path = path.ok_or(ConfigError::ArgNotFound)?;
+            Ok(Command::Delete {
+                path,
+                dry_run,
+                permanent,
+                force,
+            })
+        }
+    }
 }
 
 /// Load the configuration file and resolve its session candidates. A missing
@@ -195,6 +359,11 @@ fn load_candidates(
                 return Ok(Loaded {
                     candidates: vec![],
                     multiplexer: Multiplexer::Auto,
+                    permanent_delete: false,
+                    config_path: path,
+                    paths: vec![],
+                    git_from_home: false,
+                    config_existed: false,
                 });
             }
             return Err(ConfigError::IoError(e, config_file.to_string()));
@@ -204,11 +373,10 @@ fn load_candidates(
     let raw: RawConfig =
         toml::from_str(&content).map_err(ConfigError::IncorrectStructure)?;
 
-    let configured = match raw.paths {
-        Some(paths) => normalize_paths(&paths, env)?,
-        None => vec![],
-    };
-    let discovered = if raw.git_from_home.unwrap_or(false) {
+    let raw_paths = raw.paths.unwrap_or_default();
+    let git_from_home = raw.git_from_home.unwrap_or(false);
+    let configured = normalize_paths(&raw_paths, env)?;
+    let discovered = if git_from_home {
         git_repos_from_home(env)?
     } else {
         vec![]
@@ -217,7 +385,22 @@ fn load_candidates(
     Ok(Loaded {
         candidates: merge_paths(configured, discovered),
         multiplexer: raw.multiplexer.unwrap_or_default(),
+        permanent_delete: raw.permanent_delete.unwrap_or(false),
+        config_path: path,
+        paths: raw_paths,
+        git_from_home,
+        config_existed: true,
     })
+}
+
+/// Re-read session candidates from an already-resolved config path.
+/// A missing file is treated as implicit (empty catalog).
+pub(crate) fn reread_candidates(
+    config_path: &str,
+    env: &dyn Fn(&str) -> Option<OsString>,
+) -> Result<Vec<SessionCandidate>> {
+    let explicit = Path::new(config_path).is_file();
+    Ok(load_candidates(config_path, explicit, env)?.candidates)
 }
 
 /// Expand every configured path into the session candidates it names.
@@ -289,7 +472,7 @@ fn is_directory(path: &str) -> bool {
 
 /// Expand tildes and environment variables, reporting invalid variables
 /// against the original spelling.
-fn expand(
+pub(crate) fn expand(
     path: &str,
     env: &dyn Fn(&str) -> Option<OsString>,
 ) -> Result<String> {
@@ -368,7 +551,7 @@ fn git_repos_from_home(
 
 /// Canonical identity of a path, falling back to its textual spelling when
 /// it cannot be canonicalized.
-fn identity(path: &str) -> String {
+pub(crate) fn identity(path: &str) -> String {
     match Path::new(path).canonicalize() {
         Ok(c) => c.display().to_string(),
         Err(_) => path.to_string(),
@@ -388,6 +571,153 @@ fn merge_paths(
         .chain(discovered)
         .filter(|c| seen.insert(identity(&c.path)))
         .collect()
+}
+
+/// Trim trailing slashes except for the filesystem root.
+fn trim_trailing_slashes(path: &str) -> &str {
+    if path == "/" {
+        path
+    } else {
+        path.trim_end_matches('/')
+    }
+}
+
+/// Immediate parent of an expanded absolute destination.
+fn expanded_parent(
+    dest: &str,
+    env: &dyn Fn(&str) -> Option<OsString>,
+) -> Result<String> {
+    let dest = expand(dest, env)?;
+    let dest = trim_trailing_slashes(&dest);
+    if !dest.starts_with('/') {
+        return Err(ConfigError::PathIsNotAbsolute(dest.to_string()));
+    }
+    match Path::new(dest).parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => {
+            Ok(parent.display().to_string())
+        }
+        _ => Err(ConfigError::PathIsNotValid(dest.to_string())),
+    }
+}
+
+/// Whether `dest` would already be discovered by the current config.
+/// `dest` need not exist. A directory entry covers its immediate children;
+/// `dir/*` covers grandchildren; `git-from-home` covers immediate children
+/// of `$HOME`.
+pub(crate) fn destination_covered(
+    dest: &str,
+    paths: &[String],
+    git_from_home: bool,
+    env: &dyn Fn(&str) -> Option<OsString>,
+) -> Result<bool> {
+    let dest = expand(dest, env)?;
+    let dest = trim_trailing_slashes(&dest);
+    if !dest.starts_with('/') {
+        return Err(ConfigError::PathIsNotAbsolute(dest.to_string()));
+    }
+    let Some(parent) = Path::new(dest).parent() else {
+        return Ok(false);
+    };
+    let parent =
+        trim_trailing_slashes(&parent.display().to_string()).to_string();
+
+    if git_from_home {
+        match env("HOME") {
+            Some(home) if !home.is_empty() => {
+                let home = home.to_string_lossy();
+                if trim_trailing_slashes(&home) == parent {
+                    return Ok(true);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    for raw in paths {
+        let expanded = expand(raw, env)?;
+        if let Some(dir) = expanded.strip_suffix("/*") {
+            let Some(grand) = Path::new(&parent).parent() else {
+                continue;
+            };
+            if trim_trailing_slashes(&grand.display().to_string())
+                == trim_trailing_slashes(dir)
+            {
+                return Ok(true);
+            }
+        } else if trim_trailing_slashes(&expanded) == parent {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Append `dest`'s expanded absolute parent to `paths` in `config_path`.
+/// Existing files keep comments and unknown keys. A missing file is created
+/// as a minimal `paths = ["<parent>"]` document, including parent dirs.
+pub(crate) fn append_parent_to_paths(
+    dest: &str,
+    config_path: &str,
+    env: &dyn Fn(&str) -> Option<OsString>,
+) -> Result<()> {
+    let parent = expanded_parent(dest, env)?;
+    if Path::new(config_path).exists() {
+        let content = fs::read_to_string(config_path)
+            .map_err(|e| ConfigError::IoError(e, config_path.to_string()))?;
+        let mut doc: DocumentMut =
+            content.parse().map_err(ConfigError::IncorrectEdit)?;
+        match doc.get_mut("paths") {
+            Some(item) => {
+                let Some(arr) = item.as_array_mut() else {
+                    return Err(ConfigError::IoError(
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "`paths` must be an array",
+                        ),
+                        config_path.to_string(),
+                    ));
+                };
+                arr.push(parent.as_str());
+            }
+            None => {
+                let mut arr = Array::new();
+                arr.push(parent.as_str());
+                doc["paths"] = Item::Value(Value::Array(arr));
+            }
+        }
+        fs::write(config_path, doc.to_string())
+            .map_err(|e| ConfigError::IoError(e, config_path.to_string()))?;
+        return Ok(());
+    }
+
+    if let Some(dir) = Path::new(config_path).parent() {
+        fs::create_dir_all(dir)
+            .map_err(|e| ConfigError::IoError(e, config_path.to_string()))?;
+    }
+    let mut doc = DocumentMut::new();
+    let mut arr = Array::new();
+    arr.push(parent.as_str());
+    doc["paths"] = Item::Value(Value::Array(arr));
+    fs::write(config_path, doc.to_string())
+        .map_err(|e| ConfigError::IoError(e, config_path.to_string()))?;
+    Ok(())
+}
+
+impl ResolvedConfig {
+    pub(crate) fn destination_covered(
+        &self,
+        dest: &str,
+        env: &dyn Fn(&str) -> Option<OsString>,
+    ) -> Result<bool> {
+        destination_covered(dest, &self.paths, self.git_from_home, env)
+    }
+
+    pub(crate) fn append_parent_to_paths(
+        &self,
+        dest: &str,
+        env: &dyn Fn(&str) -> Option<OsString>,
+    ) -> Result<()> {
+        append_parent_to_paths(dest, &self.config_path, env)
+    }
 }
 
 #[cfg(test)]

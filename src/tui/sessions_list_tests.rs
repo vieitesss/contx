@@ -1181,8 +1181,8 @@ fn grouped_folded_header_shows_glyph_count_and_tint() {
         ("/other/gamma", "/other"),
     ]);
     state.group_order = vec!["/parent".to_string(), "/other".to_string()];
-    state.folded.insert("/parent".to_string());
-    state.active_header = Some(0);
+    state.folded.insert(("/parent".to_string(), 0));
+    state.active_header = Some((0, 0));
     let buf = render_list(&sel, &mut state, 40, 20);
     let header = row_text(&buf, 0, 40);
     assert!(
@@ -1627,6 +1627,67 @@ fn grouped_query_interleaves_remainder_hits_by_rank() {
 }
 
 #[test]
+fn collapse_one_search_run_leaves_the_other_same_key_run_open() {
+    // Rank interleaves two /g1 remainder runs around /g2. Folding
+    // the run under the cursor must be occurrence-local: the other
+    // /g1 header keeps its own fold state.
+    let mut sel = typed_selection(&["/g1/azb", "/g1/ab", "/g2/ab2"], "ab");
+    let mut state = grouped_state(&[
+        ("/g1/azb", "/g1"),
+        ("/g1/ab", "/g1"),
+        ("/g2/ab2", "/g2"),
+    ]);
+    state.group_order = vec!["/g1".to_string(), "/g2".to_string()];
+    apply_query_folds(&mut state, &mut sel);
+    sel.select_entry("/g1/azb");
+    collapse_group(&mut state, "/g1", 1);
+    assert_eq!(
+        visual_entries(&sel, &state),
+        vec![
+            VisualTarget::Child("/g1/ab".to_string()),
+            VisualTarget::Child("/g2/ab2".to_string()),
+            VisualTarget::Header(0, 1),
+        ]
+    );
+    assert_eq!(state.active_header, Some((0, 1)));
+    let buf = render_list(&sel, &mut state, 40, 20);
+    let rows: Vec<String> = (0..20).map(|y| row_text(&buf, y, 40)).collect();
+    let g1: Vec<&str> = rows
+        .iter()
+        .filter(|r| r.contains("/g1"))
+        .map(|r| r.trim_end())
+        .collect();
+    assert!(
+        g1[0].starts_with("  \u{25be} /g1"),
+        "first run open: {g1:?}"
+    );
+    assert!(
+        g1.iter().any(|r| r.starts_with("  \u{25b8} /g1")),
+        "second run folded: {g1:?}"
+    );
+    expand_group(&mut state, &mut sel);
+    assert_eq!(
+        visual_entries(&sel, &state),
+        vec![
+            VisualTarget::Child("/g1/ab".to_string()),
+            VisualTarget::Child("/g2/ab2".to_string()),
+            VisualTarget::Child("/g1/azb".to_string()),
+        ]
+    );
+    assert_eq!(sel.matches()[sel.selected_line() - 1].entry, "/g1/azb");
+    sel.select_entry("/g1/ab");
+    collapse_group(&mut state, "/g1", 0);
+    assert_eq!(
+        visual_entries(&sel, &state),
+        vec![
+            VisualTarget::Header(0, 0),
+            VisualTarget::Child("/g2/ab2".to_string()),
+            VisualTarget::Child("/g1/azb".to_string()),
+        ]
+    );
+}
+
+#[test]
 fn grouped_query_contx_keeps_personal_remainder_hit() {
     // Screenshot shape for query `contx`: ~/.config/contx, the
     // missing ~/personal/contx remainder hit, and ~/work/prefapp
@@ -1637,8 +1698,7 @@ fn grouped_query_contx_keeps_personal_remainder_hit() {
     let personal = "/Users/vieitesprefapp/personal/contx";
     let tfm = "/Users/vieitesprefapp/work/prefapp/tfm-specs-to-context";
     let pcm = "/Users/vieitesprefapp/work/prefapp/private-context-modeling";
-    let tfm_nested =
-        "/Users/vieitesprefapp/work/prefapp/tfm-specs-to-context/tfm-specs-to-context";
+    let tfm_nested = "/Users/vieitesprefapp/work/prefapp/tfm-specs-to-context/tfm-specs-to-context";
     let pcm_nested = "/Users/vieitesprefapp/work/prefapp/private-context-modeling/chore/context-modeling-migration";
     let config_g = "/Users/vieitesprefapp/.config";
     let personal_g = "/Users/vieitesprefapp/personal";
@@ -1737,18 +1797,18 @@ fn visual_entries_include_folded_headers_as_stops() {
     ]);
     state.group_order = vec!["/g1".to_string(), "/g2".to_string()];
     // Folded g1 is a header stop; unfolded g2 still walks children.
-    state.folded.insert("/g1".to_string());
+    state.folded.insert(("/g1".to_string(), 0));
     assert_eq!(
         visual_entries(&sel, &state),
         vec![
-            VisualTarget::Header(0),
+            VisualTarget::Header(0, 0),
             VisualTarget::Child("/g2/b1".to_string()),
         ]
     );
-    state.folded.insert("/g2".to_string());
+    state.folded.insert(("/g2".to_string(), 0));
     assert_eq!(
         visual_entries(&sel, &state),
-        vec![VisualTarget::Header(0), VisualTarget::Header(1)]
+        vec![VisualTarget::Header(0, 0), VisualTarget::Header(1, 0)]
     );
 }
 
@@ -1757,23 +1817,23 @@ fn visual_motion_lands_on_folded_headers() {
     let mut sel = selection(&["/g1/a1", "/g2/b1"]);
     let mut state = grouped_state(&[("/g1/a1", "/g1"), ("/g2/b1", "/g2")]);
     state.group_order = vec!["/g1".to_string(), "/g2".to_string()];
-    state.folded.insert("/g1".to_string());
-    state.folded.insert("/g2".to_string());
+    state.folded.insert(("/g1".to_string(), 0));
+    state.folded.insert(("/g2".to_string(), 0));
     // Home lands on the first folded header; selected_line stays.
     assert_eq!(
         apply_visual_motion(&mut sel, &mut state, VisualMotion::First),
-        Some(VisualTarget::Header(0)),
+        Some(VisualTarget::Header(0, 0)),
     );
-    assert_eq!(state.active_header, Some(0));
+    assert_eq!(state.active_header, Some((0, 0)));
     assert_eq!(sel.selected_line(), 1);
     apply_visual_motion(&mut sel, &mut state, VisualMotion::Next);
-    assert_eq!(state.active_header, Some(1));
+    assert_eq!(state.active_header, Some((1, 0)));
     apply_visual_motion(&mut sel, &mut state, VisualMotion::Next);
-    assert_eq!(state.active_header, Some(1));
+    assert_eq!(state.active_header, Some((1, 0)));
     apply_visual_motion(&mut sel, &mut state, VisualMotion::Prev);
-    assert_eq!(state.active_header, Some(0));
+    assert_eq!(state.active_header, Some((0, 0)));
     apply_visual_motion(&mut sel, &mut state, VisualMotion::Last);
-    assert_eq!(state.active_header, Some(1));
+    assert_eq!(state.active_header, Some((1, 0)));
 }
 
 #[test]
@@ -1786,13 +1846,13 @@ fn visual_motion_from_child_onto_folded_header() {
     ]);
     state.group_order = vec!["/g1".to_string(), "/g2".to_string()];
     // g1 open, g2 folded: Child a1, Child a2, Header(1).
-    state.folded.insert("/g2".to_string());
+    state.folded.insert(("/g2".to_string(), 0));
     assert_eq!(sel.selected_line(), 1);
     apply_visual_motion(&mut sel, &mut state, VisualMotion::Next);
     assert_eq!(sel.selected_line(), 2);
     assert_eq!(state.active_header, None);
     apply_visual_motion(&mut sel, &mut state, VisualMotion::Next);
-    assert_eq!(state.active_header, Some(1));
+    assert_eq!(state.active_header, Some((1, 0)));
     assert_eq!(sel.selected_line(), 2);
     apply_visual_motion(&mut sel, &mut state, VisualMotion::Prev);
     assert_eq!(state.active_header, None);
@@ -1912,10 +1972,10 @@ fn two_groups_state() -> (Selection, SessionsListState) {
 #[test]
 fn apply_query_folds_empty_query_folds_all_and_clears_header() {
     let (mut sel, mut state) = two_groups_state();
-    state.active_header = Some(1);
+    state.active_header = Some((1, 0));
     apply_query_folds(&mut state, &mut sel);
-    assert!(state.folded.contains("/g1"));
-    assert!(state.folded.contains("/g2"));
+    assert!(state.folded.contains(&("/g1".to_string(), 0)));
+    assert!(state.folded.contains(&("/g2".to_string(), 0)));
     assert_eq!(state.active_header, None);
 }
 
@@ -1930,14 +1990,26 @@ fn apply_query_folds_nonempty_unfolds_matching_hides_empty() {
     state.group_order =
         vec!["/g1".to_string(), "/g2".to_string(), "/g3".to_string()];
     apply_query_folds(&mut state, &mut sel);
-    assert!(state.folded.contains("/g1") && state.folded.contains("/g2"));
+    assert!(
+        state.folded.contains(&("/g1".to_string(), 0))
+            && state.folded.contains(&("/g2".to_string(), 0))
+    );
     for c in "ap".chars() {
         sel.handle_key(key(KeyCode::Char(c)));
     }
     apply_query_folds(&mut state, &mut sel);
-    assert!(!state.folded.contains("/g1"), "apple matches");
-    assert!(state.folded.contains("/g2"), "cherry misses");
-    assert!(!state.folded.contains("/g3"), "apricot matches");
+    assert!(
+        !state.folded.contains(&("/g1".to_string(), 0)),
+        "apple matches"
+    );
+    assert!(
+        state.folded.contains(&("/g2".to_string(), 0)),
+        "cherry misses"
+    );
+    assert!(
+        !state.folded.contains(&("/g3".to_string(), 0)),
+        "apricot matches"
+    );
     assert_eq!(state.active_header, None);
 }
 
@@ -1947,13 +2019,13 @@ fn apply_query_folds_overrides_manual_expand_on_clear() {
     apply_query_folds(&mut state, &mut sel);
     apply_visual_motion(&mut sel, &mut state, VisualMotion::First);
     expand_group(&mut state, &mut sel);
-    assert!(!state.folded.contains("/g1"));
+    assert!(!state.folded.contains(&("/g1".to_string(), 0)));
     sel.handle_key(key(KeyCode::Char('a')));
     apply_query_folds(&mut state, &mut sel);
     sel.handle_key(key(KeyCode::Backspace));
     apply_query_folds(&mut state, &mut sel);
-    assert!(state.folded.contains("/g1"));
-    assert!(state.folded.contains("/g2"));
+    assert!(state.folded.contains(&("/g1".to_string(), 0)));
+    assert!(state.folded.contains(&("/g2".to_string(), 0)));
 }
 
 #[test]
@@ -1961,9 +2033,9 @@ fn expand_group_unfolds_and_selects_first_child() {
     let (mut sel, mut state) = two_groups_state();
     apply_query_folds(&mut state, &mut sel);
     apply_visual_motion(&mut sel, &mut state, VisualMotion::First);
-    assert_eq!(state.active_header, Some(0));
+    assert_eq!(state.active_header, Some((0, 0)));
     expand_group(&mut state, &mut sel);
-    assert!(!state.folded.contains("/g1"));
+    assert!(!state.folded.contains(&("/g1".to_string(), 0)));
     assert_eq!(state.active_header, None);
     assert_eq!(sel.matches()[sel.selected_line() - 1].entry, "/g1/a1");
 }
@@ -1974,17 +2046,17 @@ fn expand_group_is_noop_without_active_header() {
     apply_query_folds(&mut state, &mut sel);
     assert_eq!(state.active_header, None);
     expand_group(&mut state, &mut sel);
-    assert!(state.folded.contains("/g1"));
+    assert!(state.folded.contains(&("/g1".to_string(), 0)));
 }
 
 #[test]
 fn collapse_group_folds_and_lands_on_header() {
     let (sel, mut state) = two_groups_state();
-    collapse_group(&mut state, "/g1");
-    assert!(state.folded.contains("/g1"));
-    assert_eq!(state.active_header, Some(0));
-    collapse_group(&mut state, "/g2");
-    assert_eq!(state.active_header, Some(1));
+    collapse_group(&mut state, "/g1", 0);
+    assert!(state.folded.contains(&("/g1".to_string(), 0)));
+    assert_eq!(state.active_header, Some((0, 0)));
+    collapse_group(&mut state, "/g2", 0);
+    assert_eq!(state.active_header, Some((1, 0)));
     assert_eq!(sel.selected_line(), 1);
 }
 
@@ -2039,11 +2111,14 @@ fn clearing_query_refolds_all_groups() {
         sel.handle_key(key(KeyCode::Char(c)));
     }
     apply_query_folds(&mut state, &mut sel);
-    assert!(!state.folded.contains("/g1"));
+    assert!(!state.folded.contains(&("/g1".to_string(), 0)));
     sel.handle_key(key(KeyCode::Backspace));
     sel.handle_key(key(KeyCode::Backspace));
     apply_query_folds(&mut state, &mut sel);
-    assert!(state.folded.contains("/g1") && state.folded.contains("/g2"));
+    assert!(
+        state.folded.contains(&("/g1".to_string(), 0))
+            && state.folded.contains(&("/g2".to_string(), 0))
+    );
     let buf = render_list(&sel, &mut state, 40, 20);
     let all: String = (0..5)
         .map(|y| row_text(&buf, y, 40))
@@ -2063,8 +2138,8 @@ fn enter_expands_folded_header_left_collapses_child() {
     let path = row_text(&buf, 1, 40);
     assert!(path.contains("a1"), "first child: {path}");
     assert_eq!(buf[(0, 1)].bg, Theme::LIGHT.bg_alt);
-    collapse_group(&mut state, "/g1");
-    assert_eq!(state.active_header, Some(0));
+    collapse_group(&mut state, "/g1", 0);
+    assert_eq!(state.active_header, Some((0, 0)));
     let buf = render_list(&sel, &mut state, 40, 20);
     let header = row_text(&buf, 0, 40);
     assert!(header.starts_with("  \u{25b8} /g1 (2)"), "{header}");
@@ -2085,7 +2160,7 @@ fn home_end_on_folded_list_tint_first_and_last_headers() {
     assert_eq!(buf[(0, 0)].bg, Theme::LIGHT.bg);
     assert_eq!(buf[(0, 2)].bg, Theme::LIGHT.bg_alt);
     apply_visual_motion(&mut sel, &mut state, VisualMotion::Prev);
-    assert_eq!(state.active_header, Some(0));
+    assert_eq!(state.active_header, Some((0, 0)));
 }
 
 #[test]
@@ -2220,7 +2295,7 @@ fn grouped_empty_query_preserves_resolved_group_order() {
     apply_query_folds(&mut state, &mut sel);
     assert_eq!(
         visual_entries(&sel, &state),
-        vec![VisualTarget::Header(0), VisualTarget::Header(1)]
+        vec![VisualTarget::Header(0, 0), VisualTarget::Header(1, 0)]
     );
     let buf = render_list(&sel, &mut state, 40, 20);
     assert!(row_text(&buf, 0, 40).starts_with("  \u{25b8} /g1"));
@@ -2263,8 +2338,11 @@ fn grouped_prefix_only_query_shows_folded_header_with_count() {
     ]);
     state.group_order = vec!["/parent".to_string()];
     apply_query_folds(&mut state, &mut sel);
-    assert!(state.folded.contains("/parent"));
-    assert_eq!(visual_entries(&sel, &state), vec![VisualTarget::Header(0)]);
+    assert!(state.folded.contains(&("/parent".to_string(), 0)));
+    assert_eq!(
+        visual_entries(&sel, &state),
+        vec![VisualTarget::Header(0, 0)]
+    );
     let buf = render_list(&sel, &mut state, 40, 20);
     let header = row_text(&buf, 0, 40);
     assert!(
@@ -2290,13 +2368,19 @@ fn grouped_query_remainder_groups_sit_above_prefix_only() {
     let mut state = grouped_state(&[("/ab/zzzz", "/ab"), ("/z/axb", "/z")]);
     state.group_order = vec!["/ab".to_string(), "/z".to_string()];
     apply_query_folds(&mut state, &mut sel);
-    assert!(!state.folded.contains("/z"), "remainder unfolds");
-    assert!(state.folded.contains("/ab"), "prefix-only stays folded");
+    assert!(
+        !state.folded.contains(&("/z".to_string(), 0)),
+        "remainder unfolds"
+    );
+    assert!(
+        state.folded.contains(&("/ab".to_string(), 0)),
+        "prefix-only stays folded"
+    );
     assert_eq!(
         visual_entries(&sel, &state),
         vec![
             VisualTarget::Child("/z/axb".to_string()),
-            VisualTarget::Header(0),
+            VisualTarget::Header(0, 0),
         ]
     );
     let buf = render_list(&sel, &mut state, 40, 20);
@@ -2324,7 +2408,7 @@ fn grouped_empty_query_does_not_split_tiers() {
     apply_query_folds(&mut state, &mut sel);
     assert_eq!(
         visual_entries(&sel, &state),
-        vec![VisualTarget::Header(0), VisualTarget::Header(1)]
+        vec![VisualTarget::Header(0, 0), VisualTarget::Header(1, 0)]
     );
     let buf = render_list(&sel, &mut state, 40, 20);
     assert!(row_text(&buf, 0, 40).starts_with("  \u{25b8} /ab"));
@@ -2339,7 +2423,11 @@ fn grouped_pre_vieitesssclaims_stays_remainder_hit() {
     state.home = Some("/home/me".to_string());
     state.group_order = vec!["/home/me/work/pre-vieitesss".to_string()];
     apply_query_folds(&mut state, &mut sel);
-    assert!(!state.folded.contains("/home/me/work/pre-vieitesss"));
+    assert!(
+        !state
+            .folded
+            .contains(&("/home/me/work/pre-vieitesss".to_string(), 0))
+    );
     assert_eq!(
         visual_entries(&sel, &state),
         vec![VisualTarget::Child(entry.to_string())]
@@ -2369,8 +2457,11 @@ fn apply_query_folds_nonempty_focuses_first_prefix_only_header() {
     ]);
     state.group_order = vec!["/parent".to_string()];
     apply_query_folds(&mut state, &mut sel);
-    assert_eq!(state.active_header, Some(0));
-    assert_eq!(visual_entries(&sel, &state), vec![VisualTarget::Header(0)]);
+    assert_eq!(state.active_header, Some((0, 0)));
+    assert_eq!(
+        visual_entries(&sel, &state),
+        vec![VisualTarget::Header(0, 0)]
+    );
 }
 
 #[test]
@@ -2400,9 +2491,9 @@ fn expand_prefix_only_lists_children_in_catalog_order() {
     ]);
     state.group_order = vec!["/parent".to_string()];
     apply_query_folds(&mut state, &mut sel);
-    assert_eq!(state.active_header, Some(0));
+    assert_eq!(state.active_header, Some((0, 0)));
     expand_group(&mut state, &mut sel);
-    assert!(!state.folded.contains("/parent"));
+    assert!(!state.folded.contains(&("/parent".to_string(), 0)));
     assert_eq!(state.active_header, None);
     assert_eq!(
         visual_entries(&sel, &state),
@@ -2425,9 +2516,9 @@ fn expand_prefix_only_lists_children_in_catalog_order() {
     assert!(children[1].contains("apple"), "{children:?}");
     assert_eq!(hit_count(&buf, 1, 40), 0, "no remainder paint");
     assert_eq!(hit_count(&buf, 3, 40), 0, "no remainder paint");
-    collapse_group(&mut state, "/parent");
-    assert!(state.folded.contains("/parent"));
-    assert_eq!(state.active_header, Some(0));
+    collapse_group(&mut state, "/parent", 0);
+    assert!(state.folded.contains(&("/parent".to_string(), 0)));
+    assert_eq!(state.active_header, Some((0, 0)));
 }
 
 #[test]
@@ -2438,9 +2529,9 @@ fn expand_prefix_only_stays_below_remainder_hit_groups() {
     apply_query_folds(&mut state, &mut sel);
     assert_eq!(sel.matches()[sel.selected_line() - 1].entry, "/z/axb");
     apply_visual_motion(&mut sel, &mut state, VisualMotion::Next);
-    assert_eq!(state.active_header, Some(0));
+    assert_eq!(state.active_header, Some((0, 0)));
     expand_group(&mut state, &mut sel);
-    assert!(!state.folded.contains("/ab"));
+    assert!(!state.folded.contains(&("/ab".to_string(), 0)));
     assert_eq!(
         visual_entries(&sel, &state),
         vec![
@@ -2455,9 +2546,9 @@ fn expand_prefix_only_stays_below_remainder_hit_groups() {
         .find(|r| r.contains("/ab"))
         .expect("unfolded prefix-only still below");
     assert!(ab.starts_with("  \u{25be} /ab"), "{ab}");
-    collapse_group(&mut state, "/ab");
-    assert_eq!(state.active_header, Some(0));
-    assert!(state.folded.contains("/ab"));
+    collapse_group(&mut state, "/ab", 0);
+    assert_eq!(state.active_header, Some((0, 0)));
+    assert!(state.folded.contains(&("/ab".to_string(), 0)));
 }
 
 #[test]
@@ -2489,7 +2580,7 @@ fn discovery_home_has_no_prefix_only_header() {
     // Remainder-hit discovery children still unfold as tier 1.
     let mut sel = typed_selection(&["/Users/me/proj"], "proj");
     apply_query_folds(&mut state, &mut sel);
-    assert!(!state.folded.contains("/Users/me"));
+    assert!(!state.folded.contains(&("/Users/me".to_string(), 0)));
     assert_eq!(
         visual_entries(&sel, &state),
         vec![VisualTarget::Child("/Users/me/proj".to_string())]
@@ -2498,7 +2589,10 @@ fn discovery_home_has_no_prefix_only_header() {
     // Empty query still shows the discovery `$HOME` header.
     let mut sel = selection(&["/Users/me/proj"]);
     apply_query_folds(&mut state, &mut sel);
-    assert_eq!(visual_entries(&sel, &state), vec![VisualTarget::Header(0)]);
+    assert_eq!(
+        visual_entries(&sel, &state),
+        vec![VisualTarget::Header(0, 0)]
+    );
 }
 
 #[test]
@@ -2511,7 +2605,10 @@ fn configured_home_may_still_be_prefix_only() {
     assert_eq!(state.home_discovery_group, None);
     state.group_order = vec!["/Users/me".to_string()];
     apply_query_folds(&mut state, &mut sel);
-    assert_eq!(visual_entries(&sel, &state), vec![VisualTarget::Header(0)]);
+    assert_eq!(
+        visual_entries(&sel, &state),
+        vec![VisualTarget::Header(0, 0)]
+    );
     let buf = render_list(&sel, &mut state, 40, 8);
     let header = row_text(&buf, 0, 40);
     assert!(header.starts_with("  \u{25b8} ~ (1)"), "{header}");
@@ -2526,7 +2623,10 @@ fn grouped_users_query_drops_collapsed_users_hits_on_header() {
     state.home = Some("/Users/me".to_string());
     state.group_order = vec!["/Users/me/work".to_string()];
     apply_query_folds(&mut state, &mut sel);
-    assert_eq!(visual_entries(&sel, &state), vec![VisualTarget::Header(0)]);
+    assert_eq!(
+        visual_entries(&sel, &state),
+        vec![VisualTarget::Header(0, 0)]
+    );
     let buf = render_list(&sel, &mut state, 40, 8);
     let header = row_text(&buf, 0, 40);
     assert!(header.starts_with("  \u{25b8} ~/work (1)"), "{header}");
@@ -2582,4 +2682,280 @@ fn tilde_query_does_not_match_home_abbreviation() {
     let buf = render_list(&sel, &mut state, 40, 4);
     let row = row_text(&buf, 0, 40);
     assert!(row.contains("no matches for \"~\""), "empty: {row}");
+}
+
+fn tinted_folded_header_rows(buf: &Buffer, h: u16, w: u16) -> Vec<u16> {
+    let bg_alt = Theme::LIGHT.bg_alt;
+    (0..h)
+        .filter(|&y| {
+            row_text(buf, y, w).contains('\u{25b8}') && buf[(0, y)].bg == bg_alt
+        })
+        .collect()
+}
+
+#[test]
+fn ctrl_j_walks_distinct_prefix_only_headers() {
+    // Report: query `f`, first stop is remainder-hit `diffs.nvim`
+    // under ~/opt; Ctrl-J (Next) tints several folded prefix-only
+    // `~/.config`-style headers at once, and the next Next returns
+    // to the starting child instead of walking later stops.
+    let home = "/Users/vieitesprefapp";
+    let diffs = format!("{home}/opt/diffs.nvim");
+    let fuzzy = format!("{home}/opt/fuzzy.nvim");
+    let config_nvim = format!("{home}/.config/nvim");
+    let config_git = format!("{home}/.config/git");
+    let g_opt = format!("{home}/opt");
+    let g_config = format!("{home}/.config");
+    let work_groups: Vec<(String, String)> = (0..8)
+        .map(|i| {
+            let group = format!("{home}/work/g{i}");
+            let path = format!("{group}/notes");
+            (path, group)
+        })
+        .collect();
+    let mut paths: Vec<&str> = vec![&diffs, &fuzzy, &config_nvim, &config_git];
+    paths.extend(work_groups.iter().map(|(p, _)| p.as_str()));
+    let mut sel = typed_selection(&paths, "f");
+    let mut pairs: Vec<(&str, &str)> = vec![
+        (&diffs, &g_opt),
+        (&fuzzy, &g_opt),
+        (&config_nvim, &g_config),
+        (&config_git, &g_config),
+    ];
+    pairs.extend(work_groups.iter().map(|(p, g)| (p.as_str(), g.as_str())));
+    let mut state = grouped_state(&pairs);
+    state.home = Some(home.to_string());
+    let mut order = vec![g_config.clone(), g_opt.clone()];
+    order.extend(work_groups.iter().map(|(_, g)| g.clone()));
+    state.group_order = order;
+    apply_query_folds(&mut state, &mut sel);
+
+    let stops = visual_entries(&sel, &state);
+    let start = match state.active_header {
+        Some((idx, run)) => VisualTarget::Header(idx, run),
+        None => VisualTarget::Child(
+            sel.matches()[sel.selected_line() - 1].entry.clone(),
+        ),
+    };
+    assert_eq!(stops.first(), Some(&start), "first stop: {stops:?}");
+    assert!(
+        matches!(start, VisualTarget::Child(ref p) if p.ends_with("diffs.nvim") || p.ends_with("fuzzy.nvim")),
+        "first stop should be an opt remainder child: {start:?}"
+    );
+    let header_stops: Vec<_> = stops
+        .iter()
+        .filter(|s| matches!(s, VisualTarget::Header(_, _)))
+        .collect();
+    assert!(
+        header_stops.len() >= 2,
+        "need multiple prefix-only headers: {stops:?}"
+    );
+    assert!(
+        stops
+            .iter()
+            .any(|s| matches!(s, VisualTarget::Child(p) if p == &diffs))
+    );
+    assert!(
+        stops
+            .iter()
+            .any(|s| matches!(s, VisualTarget::Child(p) if p == &fuzzy))
+    );
+
+    let mut landed = Vec::new();
+    let view_h = 12u16;
+    for _ in 0..stops.len() + 2 {
+        let buf = render_list(&sel, &mut state, 48, view_h);
+        let tinted = tinted_folded_header_rows(&buf, view_h, 48);
+        assert!(
+            tinted.len() <= 1,
+            "folded headers must not share tint: {tinted:?} scroll={} active={:?} line={}\n{}",
+            state.scroll,
+            state.active_header,
+            sel.selected_line(),
+            (0..view_h)
+                .map(|y| row_text(&buf, y, 48))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+        apply_visual_motion(&mut sel, &mut state, VisualMotion::Next);
+        let now = match state.active_header {
+            Some((idx, run)) => VisualTarget::Header(idx, run),
+            None => VisualTarget::Child(
+                sel.matches()[sel.selected_line() - 1].entry.clone(),
+            ),
+        };
+        landed.push(now);
+    }
+    assert_eq!(
+        landed[0], stops[1],
+        "first Next must advance to the next stop, not stay or skip: {landed:?} stops={stops:?}"
+    );
+    assert_ne!(
+        landed[1], start,
+        "second Next must not return to the starting child: {landed:?}"
+    );
+    let unique_prefix: Vec<_> =
+        landed.iter().take(stops.len() - 1).cloned().collect();
+    assert_eq!(
+        unique_prefix,
+        stops[1..].to_vec(),
+        "Next must walk each later stop once, no wrap: {landed:?} stops={stops:?}"
+    );
+    assert_eq!(
+        landed[stops.len() - 1],
+        *stops.last().unwrap(),
+        "Next past the last stop must hold, not wrap: {landed:?}"
+    );
+}
+
+fn focus_stop(sel: &Selection, state: &SessionsListState) -> VisualTarget {
+    match state.active_header {
+        Some((idx, run)) => VisualTarget::Header(idx, run),
+        None => VisualTarget::Child(
+            sel.matches()[sel.selected_line() - 1].entry.clone(),
+        ),
+    }
+}
+
+#[test]
+fn ctrl_j_from_remainder_child_does_not_loop_across_prefix_only_headers() {
+    // Frozen regression: query `f` ranks `/cfg/fa`, `/opt/diffs.nvim`,
+    // `/cfg/fuzzy-long-name` so folded `/cfg` appears as two runs
+    // around the remainder child. Each visible folded header must be
+    // its own stop; Next walks that order with no wrap; at most one
+    // folded header is tinted; diffs is not retinted until Prev.
+    let diffs = "/opt/diffs.nvim";
+    let cfg_a = "/cfg/fa";
+    let cfg_b = "/cfg/fuzzy-long-name";
+    let g_opt = "/opt";
+    let g_config = "/cfg";
+    let mut sel = typed_selection(&[cfg_a, diffs, cfg_b], "f");
+    assert_eq!(
+        sel.matches()
+            .iter()
+            .map(|m| m.entry.as_str())
+            .collect::<Vec<_>>(),
+        vec![cfg_a, diffs, cfg_b],
+        "rank must interleave config runs around diffs"
+    );
+    let mut state =
+        grouped_state(&[(cfg_a, g_config), (diffs, g_opt), (cfg_b, g_config)]);
+    state.group_order = vec![g_config.to_string(), g_opt.to_string()];
+    apply_query_folds(&mut state, &mut sel);
+    state.folded.insert((g_config.to_string(), 0));
+    state.folded.insert((g_config.to_string(), 1));
+    state.active_header = None;
+    sel.select_entry(diffs);
+    assert_eq!(
+        focus_stop(&sel, &state),
+        VisualTarget::Child(diffs.to_string())
+    );
+
+    let stops = visual_entries(&sel, &state);
+    let header_stops: Vec<_> = stops
+        .iter()
+        .filter(|s| matches!(s, VisualTarget::Header(_, _)))
+        .cloned()
+        .collect();
+    assert!(
+        header_stops.len() >= 2,
+        "need repeated folded header runs: {stops:?}"
+    );
+    for (i, h) in header_stops.iter().enumerate() {
+        assert!(
+            !header_stops[..i].contains(h),
+            "each folded header run must be its own stop: {stops:?}"
+        );
+    }
+    let start = VisualTarget::Child(diffs.to_string());
+    assert_eq!(stops.iter().filter(|s| *s == &start).count(), 1);
+    let start_pos = stops.iter().position(|s| s == &start).unwrap();
+    assert_eq!(focus_stop(&sel, &state), start);
+
+    let (w, h) = (40u16, 8u16);
+    let mut landed = Vec::new();
+    for step in 0..stops.len() - start_pos + 1 {
+        let buf = render_list(&sel, &mut state, w, h);
+        let tinted = tinted_folded_header_rows(&buf, h, w);
+        assert!(
+            tinted.len() <= 1,
+            "at most one folded header tint at step {step}: {tinted:?} focus={:?}\n{}",
+            focus_stop(&sel, &state),
+            (0..h)
+                .map(|y| row_text(&buf, y, w))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+        if step > 0 {
+            assert_ne!(
+                focus_stop(&sel, &state),
+                start,
+                "starting child must not be retinted until Prev: step={step} landed={landed:?}"
+            );
+        }
+        apply_visual_motion(&mut sel, &mut state, VisualMotion::Next);
+        landed.push(focus_stop(&sel, &state));
+    }
+    let suffix = &stops[start_pos + 1..];
+    assert_eq!(
+        &landed[..suffix.len()],
+        suffix,
+        "Next must walk each later stop: {landed:?} stops={stops:?}"
+    );
+    assert_eq!(
+        landed[suffix.len() - 1],
+        *stops.last().unwrap(),
+        "Next past the last stop must hold, not wrap: {landed:?}"
+    );
+    apply_visual_motion(&mut sel, &mut state, VisualMotion::Prev);
+    assert_eq!(
+        focus_stop(&sel, &state),
+        start,
+        "Prev from the later header run returns to diffs"
+    );
+}
+
+/// H1 one-variable probe: distinct group keys → distinct Header idx.
+/// Shared tint and 2-cycle must disappear.
+#[test]
+fn ctrl_j_distinct_header_indices_do_not_share_tint_or_loop() {
+    let diffs = "/opt/diffs.nvim";
+    let cfg_a = "/cfg-a/fa";
+    let cfg_b = "/cfg-b/fuzzy-long-name";
+    let mut sel = typed_selection(&[cfg_a, diffs, cfg_b], "f");
+    assert_eq!(
+        sel.matches()
+            .iter()
+            .map(|m| m.entry.as_str())
+            .collect::<Vec<_>>(),
+        vec![cfg_a, diffs, cfg_b]
+    );
+    let mut state =
+        grouped_state(&[(cfg_a, "/cfg-a"), (diffs, "/opt"), (cfg_b, "/cfg-b")]);
+    state.group_order = vec!["/cfg-a".to_string(), "/cfg-b".to_string()];
+    state.folded.insert(("/cfg-a".to_string(), 0));
+    state.folded.insert(("/cfg-b".to_string(), 0));
+    sel.select_entry(diffs);
+
+    let stops = visual_entries(&sel, &state);
+    assert_eq!(
+        stops,
+        vec![
+            VisualTarget::Header(0, 0),
+            VisualTarget::Child(diffs.to_string()),
+            VisualTarget::Header(1, 0),
+        ]
+    );
+    let (w, h) = (40u16, 8u16);
+    apply_visual_motion(&mut sel, &mut state, VisualMotion::Next);
+    assert_eq!(focus_stop(&sel, &state), VisualTarget::Header(1, 0));
+    assert_eq!(state.active_header, Some((1, 0)));
+    let buf = render_list(&sel, &mut state, w, h);
+    assert_eq!(tinted_folded_header_rows(&buf, h, w).len(), 1);
+    apply_visual_motion(&mut sel, &mut state, VisualMotion::Next);
+    assert_eq!(focus_stop(&sel, &state), VisualTarget::Header(1, 0));
+    assert_ne!(
+        focus_stop(&sel, &state),
+        VisualTarget::Child(diffs.to_string())
+    );
 }

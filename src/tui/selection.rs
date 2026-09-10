@@ -11,6 +11,8 @@ pub enum Intent {
     None,
     Exit,
     Activate(String),
+    Clone,
+    Delete(String),
 }
 
 /// Session-selection workflow: key input, query editing, ranked matches,
@@ -158,6 +160,12 @@ impl Selection {
         if let Some(pos) = self.matches.iter().position(|m| m.entry == entry) {
             self.selected_line = pos + 1;
         }
+    }
+
+    /// Replace the catalog, keeping the query and refiltering.
+    pub(crate) fn replace_candidates(&mut self, candidates: &[String]) {
+        self.candidates = candidates.to_vec();
+        self.refilter();
     }
 
     /// Linear move on the single-column list. No wrap: moving past

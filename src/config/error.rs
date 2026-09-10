@@ -4,8 +4,10 @@ use std::{error, fmt, io};
 pub enum ConfigError {
     IoError(io::Error, String),
     IncorrectStructure(toml::de::Error),
+    IncorrectEdit(toml_edit::TomlError),
     ArgIsNotValid(String),
     ArgNotFound,
+    ForceWithDryRun,
     HomeIsNotSet,
     PathHasInvalidEnv(std::env::VarError, String, String),
     PathIsNotAbsolute(String),
@@ -18,12 +20,14 @@ impl error::Error for ConfigError {
         match self {
             ConfigError::IoError(e, _) => Some(e),
             ConfigError::IncorrectStructure(e) => Some(e),
+            ConfigError::IncorrectEdit(e) => Some(e),
             ConfigError::PathHasInvalidEnv(e, _, _) => Some(e),
             ConfigError::PathIsNotAbsolute(_) => None,
             ConfigError::PathIsNotDirectory(_) => None,
             ConfigError::PathIsNotValid(_) => None,
             ConfigError::ArgIsNotValid(_) => None,
             ConfigError::ArgNotFound => None,
+            ConfigError::ForceWithDryRun => None,
             ConfigError::HomeIsNotSet => None,
         }
     }
@@ -47,6 +51,9 @@ impl fmt::Display for ConfigError {
             ConfigError::IncorrectStructure(e) => {
                 write!(f, "{e}")
             }
+            ConfigError::IncorrectEdit(e) => {
+                write!(f, "{e}")
+            }
             ConfigError::PathHasInvalidEnv(e, env, path) => {
                 write!(f, "{e}; `{env}` in `{path}`")
             }
@@ -55,6 +62,9 @@ impl fmt::Display for ConfigError {
             }
             ConfigError::ArgNotFound => {
                 write!(f, "an argument was expected but wasn't found")
+            }
+            ConfigError::ForceWithDryRun => {
+                write!(f, "`--force` cannot be combined with `--dry-run`")
             }
             ConfigError::HomeIsNotSet => {
                 write!(f, "$HOME is not set")

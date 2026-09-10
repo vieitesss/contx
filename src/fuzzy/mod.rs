@@ -25,16 +25,12 @@ fn find_first_match(
 
     while query_idx < query_len {
         let qc = query_chars[query_idx];
-        if let Some(off) = entry_chars[entry_idx..]
+        let off = entry_chars[entry_idx..]
             .iter()
-            .position(|&c| chars_eq(c, qc))
-        {
-            entry_idx += off;
-            found.push(entry_idx);
-            entry_idx += 1;
-        } else {
-            return None;
-        }
+            .position(|&c| chars_eq(c, qc))?;
+        entry_idx += off;
+        found.push(entry_idx);
+        entry_idx += 1;
         query_idx += 1;
     }
 
@@ -110,7 +106,7 @@ fn find_best_match(
 
     while entry_idx < entry_len {
         if chars_eq(entry_chars[entry_idx], query_chars[query_idx]) {
-            candidate = tighten_span(&entry_chars, &query_chars, entry_idx);
+            candidate = tighten_span(entry_chars, query_chars, entry_idx);
 
             entry_idx = candidate[query_len - 1];
             query_idx = query_len - 1;
@@ -128,7 +124,7 @@ fn find_best_match(
 }
 
 fn find_indices(entry: &str, query: &str) -> Option<Match> {
-    if query == "" {
+    if query.is_empty() {
         return Some(Match {
             entry: entry.to_string(),
             match_ranges: vec![],
@@ -138,12 +134,7 @@ fn find_indices(entry: &str, query: &str) -> Option<Match> {
     let query_chars: Vec<char> = query.chars().collect();
     let entry_chars: Vec<char> = entry.chars().collect();
 
-    let first_match: Vec<usize>;
-    if let Some(m) = find_first_match(&query_chars, &entry_chars) {
-        first_match = m;
-    } else {
-        return None;
-    }
+    let first_match = find_first_match(&query_chars, &entry_chars)?;
 
     let first_match_len = first_match.len();
     let best = find_best_match(

@@ -166,6 +166,45 @@ fn pane_list(
     invoke(runner, env, &["pane", "list"])
 }
 
+/// Collect `cwd` and `foreground_cwd` from a `pane list` result.
+fn pane_cwds_from(result: &Value) -> Result<Vec<String>, HerdrError> {
+    if result.get("type").and_then(Value::as_str) != Some("pane_list") {
+        return Err(HerdrError::GarbageJson);
+    }
+    let Some(panes) = result.get("panes").and_then(Value::as_array) else {
+        return Err(HerdrError::GarbageJson);
+    };
+    let mut seen = HashSet::new();
+    let mut cwds = Vec::new();
+    for pane in panes {
+        for key in ["cwd", "foreground_cwd"] {
+            let Some(raw) = pane.get(key).and_then(Value::as_str) else {
+                continue;
+            };
+            if raw.is_empty() {
+                continue;
+            }
+            if seen.insert(raw.to_string()) {
+                cwds.push(raw.to_string());
+            }
+        }
+    }
+    Ok(cwds)
+}
+
+/// List visible Herdr pane working directories.
+pub(crate) fn pane_cwds() -> Result<Vec<String>, HerdrError> {
+    pane_cwds_with(&mut ProductionRunner, &|name| std::env::var_os(name))
+}
+
+fn pane_cwds_with(
+    runner: &mut dyn CommandRunner,
+    env: &dyn Fn(&str) -> Option<OsString>,
+) -> Result<Vec<String>, HerdrError> {
+    let listed = pane_list(runner, env)?;
+    pane_cwds_from(&listed)
+}
+
 fn workspace_focus(
     runner: &mut dyn CommandRunner,
     env: &dyn Fn(&str) -> Option<OsString>,
@@ -336,12 +375,8 @@ fn label_for(
     candidate: &str,
     env: &dyn Fn(&str) -> Option<OsString>,
 ) -> Result<String, OpenError> {
-    crate::tmux::session_name(candidate, env).map_err(|e| match e {
-        crate::tmux::errors::ActivationError::InvalidCandidate(c) => {
-            OpenError::InvalidCandidate(c)
-        }
-        _ => OpenError::InvalidCandidate(candidate.to_string()),
-    })
+    crate::label::project_target_label(candidate, env)
+        .map_err(|e| OpenError::InvalidCandidate(e.0))
 }
 
 fn choose_from(
@@ -389,6 +424,7 @@ fn production_choose(
     choose_from(candidate, ids, is_tty, &mut stdin.lock(), &mut io::stderr())
 }
 
+#[allow(clippy::type_complexity)]
 fn open_with(
     candidate: &str,
     runner: &mut dyn CommandRunner,
@@ -401,11 +437,13 @@ fn open_with(
                 candidate: candidate.to_string(),
             }
         })?;
+    // Naming fails before any Herdr command so an invalid
+    // candidate cannot list panes or create a workspace.
+    let label = label_for(candidate, env)?;
     let listed = pane_list(runner, env).map_err(OpenError::Cli)?;
     let ids = matching_ids(&listed, &canonical)?;
     match ids.as_slice() {
         [] => {
-            let label = label_for(candidate, env)?;
             let cwd = canonical.display().to_string();
             let result = workspace_create(runner, env, &cwd, &label)
                 .map_err(OpenError::Cli)?;

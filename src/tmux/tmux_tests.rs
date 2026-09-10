@@ -1,5 +1,6 @@
 use super::errors::{ActivationError, TmuxError};
-use super::{CommandRunner, RawOutput, open_with};
+use super::{CommandRunner, RawOutput, open_with, pane_cwds_with};
+use crate::label::project_target_label;
 use std::collections::VecDeque;
 use std::ffi::OsString;
 use std::io::{self, ErrorKind};
@@ -315,6 +316,7 @@ fn absent_switch_after_create_is_reported_not_retried() {
 #[test]
 fn derives_session_names_from_candidates() {
     let cases = [
+        ("/home/tester/contx", "tester_contx"),
         ("/home/tester/work/something", "work_something"),
         ("/home/tester/personal/contx", "personal_contx"),
         ("/home/tester/personal/.dot", "personal__dot"),
@@ -330,6 +332,26 @@ fn derives_session_names_from_candidates() {
 
         assert_eq!(res.unwrap().session, expected);
         assert_eq!(runner.calls, [has_call(expected), switch_call(expected)]);
+    }
+}
+
+#[test]
+fn lookup_name_equals_shared_label_policy() {
+    let cases = [
+        "/home/tester/contx",
+        "/home/tester/work/something",
+        "/home/tester/personal/.dot",
+        "/home/tester/tester/proj",
+        "/srv/other/proj",
+        "/home/tester/a/b/c",
+    ];
+    let env = inside_env();
+    for candidate in cases {
+        let label = project_target_label(candidate, &env).unwrap();
+        let mut runner = ScriptRunner::new(vec![succeeded(), succeeded()]);
+        let res = open_with(candidate, &mut runner, &env);
+        assert_eq!(res.unwrap().session, label);
+        assert_eq!(runner.calls, [has_call(&label), switch_call(&label)]);
     }
 }
 
@@ -384,4 +406,34 @@ fn errors_render_actionable_diagnostics() {
 
     let e = ActivationError::InvalidCandidate(CANDIDATE.to_string());
     assert!(format!("{e}").contains(CANDIDATE));
+}
+
+fn pane_cwd_stdout(text: &str) -> io::Result<RawOutput> {
+    Ok(RawOutput {
+        success: true,
+        stdout: text.as_bytes().to_vec(),
+        stderr: vec![],
+    })
+}
+
+#[test]
+fn pane_cwds_lists_nonempty_paths() {
+    let mut runner =
+        ScriptRunner::new(vec![pane_cwd_stdout("/work/a\n/work/b\n\n")]);
+    let cwds = pane_cwds_with(&mut runner).unwrap();
+    assert_eq!(cwds, vec!["/work/a", "/work/b"]);
+    assert_eq!(
+        runner.calls[0],
+        ["list-panes", "-a", "-F", "#{pane_current_path}",]
+    );
+}
+
+#[test]
+fn pane_cwds_command_failure_is_error() {
+    let mut runner = ScriptRunner::new(vec![Ok(RawOutput {
+        success: false,
+        stdout: vec![],
+        stderr: b"no server".to_vec(),
+    })]);
+    assert!(pane_cwds_with(&mut runner).is_err());
 }

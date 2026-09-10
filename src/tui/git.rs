@@ -1,6 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
-    fs,
+    fs, io,
     path::Path,
     process::Command,
     sync::{Arc, Mutex, mpsc},
@@ -85,26 +85,56 @@ pub(crate) enum RootResolve {
 
 const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 const SCAN_EVERY: Duration = Duration::from_secs(1);
-const PUBLISH_RETRY: Duration = Duration::from_millis(20);
 /// Cadence for re-attempting a lagging cumulative publish (see
 /// `Sent::Lagging`). A retry cadence, not a timing assumption:
 /// any value converges, since every attempt carries the latest
 /// cumulative states.
+const PUBLISH_RETRY: Duration = Duration::from_millis(20);
 
-/// One `git` invocation. Anything failing (missing git, vanished
-/// repo, bad output) is `None`; the caller maps that to Failed.
+/// Narrow internal seam at git command execution. Production
+/// runs the real executable; tests script launch, status, and
+/// stdout. Not a Git provider: parse and classification stay
+/// in this module. Distinct from `GitOps`, which substitutes
+/// whole resolve/scan operations for the scheduler.
+trait CommandRunner {
+    fn run(&mut self, root: &str, args: &[&str]) -> io::Result<RawOutput>;
+}
+
+/// One git process invocation, before classification.
+struct RawOutput {
+    success: bool,
+    stdout: Vec<u8>,
+}
+
+struct ProductionRunner;
+
+impl CommandRunner for ProductionRunner {
+    fn run(&mut self, root: &str, args: &[&str]) -> io::Result<RawOutput> {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(args)
+            .env("GIT_OPTIONAL_LOCKS", "0")
+            .output()?;
+        Ok(RawOutput {
+            success: output.status.success(),
+            stdout: output.stdout,
+        })
+    }
+}
+
+/// One `git` invocation. Launch failure, nonzero status, and
+/// invalid UTF-8 are `None`; the caller maps that to Failed.
 /// Read-only inspection takes no index locks: concurrent workers
 /// share worktrees, so an optional lock must never block a scan
 /// or let one mutate state another is reading.
-fn git(root: &str, args: &[&str]) -> Option<String> {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(args)
-        .env("GIT_OPTIONAL_LOCKS", "0")
-        .output()
-        .ok()?;
-    if !out.status.success() {
+fn git(
+    runner: &mut dyn CommandRunner,
+    root: &str,
+    args: &[&str],
+) -> Option<String> {
+    let out = runner.run(root, args).ok()?;
+    if !out.success {
         return None;
     }
     String::from_utf8(out.stdout).ok()
@@ -116,6 +146,13 @@ fn git(root: &str, args: &[&str]) -> Option<String> {
 /// git; any git failure under an existing marker is Failed.
 /// Bare repositories stay in the nonrepo bucket.
 pub(crate) fn resolve_root(candidate: &str) -> RootResolve {
+    resolve_root_with(candidate, &mut ProductionRunner)
+}
+
+fn resolve_root_with(
+    candidate: &str,
+    runner: &mut dyn CommandRunner,
+) -> RootResolve {
     let mut dir = Path::new(candidate);
     let marker = loop {
         if dir.join(".git").exists() {
@@ -131,11 +168,11 @@ pub(crate) fn resolve_root(candidate: &str) -> RootResolve {
         None => return RootResolve::Nonrepo,
     };
     let top = top.display().to_string();
-    let root = match git(&top, &["rev-parse", "--show-toplevel"]) {
+    let root = match git(runner, &top, &["rev-parse", "--show-toplevel"]) {
         Some(t) => t.trim().to_string(),
         None => return RootResolve::Failed,
     };
-    match git(&top, &["rev-parse", "--is-bare-repository"]) {
+    match git(runner, &top, &["rev-parse", "--is-bare-repository"]) {
         Some(b) if b.trim() == "true" => return RootResolve::Nonrepo,
         Some(_) => {}
         None => return RootResolve::Failed,
@@ -148,7 +185,11 @@ pub(crate) fn resolve_root(candidate: &str) -> RootResolve {
     // grouped list. The extra query rides this same Resolve
     // job; anything but a linked root skips it, and any
     // failure is `None`, never a fetch or a Failed.
-    let primary = if linked { primary_root(&root) } else { None };
+    let primary = if linked {
+        primary_root(runner, &root)
+    } else {
+        None
+    };
     RootResolve::Root(root, linked, primary)
 }
 
@@ -158,8 +199,8 @@ pub(crate) fn resolve_root(candidate: &str) -> RootResolve {
 /// against the linked root; stripping a trailing `/.git`
 /// yields the main worktree. Read-only like every other query:
 /// `None` on any failure, so the candidate stays flat.
-fn primary_root(root: &str) -> Option<String> {
-    let common = git(root, &["rev-parse", "--git-common-dir"])?;
+fn primary_root(runner: &mut dyn CommandRunner, root: &str) -> Option<String> {
+    let common = git(runner, root, &["rev-parse", "--git-common-dir"])?;
     let common = common.trim();
     if common.is_empty() {
         return None;
@@ -193,8 +234,9 @@ fn count_lines(bytes: &[u8]) -> Option<u64> {
 /// HEAD) compares against the empty tree. Dirty without
 /// measurable lines (binary, pure rename, empty file,
 /// submodule, conflict, other) is Marker.
-pub(crate) fn scan_root(root: &str) -> WorkState {
+fn scan_root_with(root: &str, runner: &mut dyn CommandRunner) -> WorkState {
     let status = match git(
+        runner,
         root,
         &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
     ) {
@@ -207,24 +249,32 @@ pub(crate) fn scan_root(root: &str) -> WorkState {
     // so quoted/tab/newline paths survive intact. Rename sources
     // arrive as bare trailing fields without the `XY ` prefix
     // and are skipped. Non-UTF8 output fails the String
-    // conversion in `git`, surfacing as Failed.
+    // conversion in `git`, surfacing as Failed. Non-empty junk
+    // with no valid XY field is Failed, not Clean.
+    let mut saw_field = false;
+    let mut saw_valid = false;
     for field in status.split('\0') {
         if field.is_empty() {
             continue;
         }
+        saw_field = true;
         let raw = field.as_bytes();
         if raw.len() < 4 || raw[2] != b' ' {
             continue;
         }
+        saw_valid = true;
         dirty = true;
         if raw[0] == b'?' && raw[1] == b'?' {
             untracked.push(&field[3..]);
         }
     }
-    let head = git(root, &["rev-parse", "--verify", "--quiet", "HEAD"])
+    if saw_field && !saw_valid {
+        return WorkState::Failed;
+    }
+    let head = git(runner, root, &["rev-parse", "--verify", "--quiet", "HEAD"])
         .map(|s| s.trim().to_string())
         .unwrap_or_else(|| EMPTY_TREE.to_string());
-    let numstat = match git(root, &["diff", "--numstat", "-M", &head]) {
+    let numstat = match git(runner, root, &["diff", "--numstat", "-M", &head]) {
         Some(n) => n,
         None => return WorkState::Failed,
     };
@@ -233,11 +283,11 @@ pub(crate) fn scan_root(root: &str) -> WorkState {
     for line in numstat.lines() {
         dirty = true;
         let mut cols = line.split('\t');
-        if let (Some(a), Some(d)) = (cols.next(), cols.next()) {
-            if let (Ok(x), Ok(y)) = (a.parse::<u64>(), d.parse::<u64>()) {
-                added += x;
-                deleted += y;
-            }
+        if let (Some(a), Some(d)) = (cols.next(), cols.next())
+            && let (Ok(x), Ok(y)) = (a.parse::<u64>(), d.parse::<u64>())
+        {
+            added += x;
+            deleted += y;
         }
     }
     for path in untracked {
@@ -286,8 +336,14 @@ fn parse_upstream(out: &str) -> Upstream {
 /// ref just reports stale counts. No upstream, detached HEAD,
 /// a missing tracking ref, or any failure is `Absent`; the
 /// caller keeps the local `WorkState` either way.
+#[cfg(test)]
 pub(crate) fn scan_upstream(root: &str) -> Upstream {
+    scan_upstream_with(root, &mut ProductionRunner)
+}
+
+fn scan_upstream_with(root: &str, runner: &mut dyn CommandRunner) -> Upstream {
     let out = match git(
+        runner,
         root,
         &["rev-list", "--left-right", "--count", "HEAD...@{upstream}"],
     ) {
@@ -302,8 +358,13 @@ pub(crate) fn scan_upstream(root: &str) -> Upstream {
 /// `HEAD` means detached, so the short SHA follows instead.
 /// Any failure is `Absent`; the caller keeps the local
 /// `WorkState` either way.
+#[cfg(test)]
 pub(crate) fn scan_head(root: &str) -> Head {
-    let name = match git(root, &["rev-parse", "--abbrev-ref", "HEAD"]) {
+    scan_head_with(root, &mut ProductionRunner)
+}
+
+fn scan_head_with(root: &str, runner: &mut dyn CommandRunner) -> Head {
+    let name = match git(runner, root, &["rev-parse", "--abbrev-ref", "HEAD"]) {
         Some(n) => n.trim().to_string(),
         None => return Head::Absent,
     };
@@ -313,7 +374,7 @@ pub(crate) fn scan_head(root: &str) -> Head {
     if name != "HEAD" {
         return Head::Named(name);
     }
-    match git(root, &["rev-parse", "--short", "HEAD"]) {
+    match git(runner, root, &["rev-parse", "--short", "HEAD"]) {
         Some(s) if !s.trim().is_empty() => Head::Detached {
             short: s.trim().to_string(),
         },
@@ -326,10 +387,20 @@ pub(crate) fn scan_head(root: &str) -> Head {
 /// A failed local scan skips the extra commands (Failed
 /// renders alone) and stays `Absent` on both.
 pub(crate) fn scan_worktree(root: &str) -> ScanResult {
-    let state = scan_root(root);
+    scan_worktree_with(root, &mut ProductionRunner)
+}
+
+fn scan_worktree_with(
+    root: &str,
+    runner: &mut dyn CommandRunner,
+) -> ScanResult {
+    let state = scan_root_with(root, runner);
     let (head, upstream) = match state {
         WorkState::Failed => (Head::Absent, Upstream::Absent),
-        _ => (scan_head(root), scan_upstream(root)),
+        _ => (
+            scan_head_with(root, runner),
+            scan_upstream_with(root, runner),
+        ),
     };
     ScanResult {
         state,
@@ -458,6 +529,11 @@ impl GitStates {
     pub(crate) fn get(&self, candidate: &str) -> Option<&CandidateState> {
         self.known.get(candidate)
     }
+
+    /// Drop states for paths that are no longer in the catalog.
+    pub(crate) fn retain_paths(&mut self, keep: &HashSet<String>) {
+        self.known.retain(|k, _| keep.contains(k));
+    }
 }
 
 /// Injectable Git operations behind the poll worker. Production
@@ -476,8 +552,8 @@ impl GitOps {
     /// one-second pause between refresh cycles.
     fn real() -> Self {
         GitOps {
-            resolve: Arc::new(|c| resolve_root(c)),
-            scan: Arc::new(|r| scan_worktree(r)),
+            resolve: Arc::new(resolve_root),
+            scan: Arc::new(scan_worktree),
             between_cycles: Arc::new(|| thread::sleep(SCAN_EVERY)),
         }
     }
@@ -655,10 +731,10 @@ fn unique_roots(mapping: &HashMap<String, RootResolve>) -> Vec<String> {
     let mut seen = HashSet::new();
     let mut roots = Vec::new();
     for resolved in mapping.values() {
-        if let RootResolve::Root(r, ..) = resolved {
-            if seen.insert(r.clone()) {
-                roots.push(r.clone());
-            }
+        if let RootResolve::Root(r, ..) = resolved
+            && seen.insert(r.clone())
+        {
+            roots.push(r.clone());
         }
     }
     roots
@@ -775,10 +851,11 @@ fn poll_worker(
                     // queued, in flight, or done this cycle, so
                     // nested candidates share a single scan.
                     let mut scan_now = None;
-                    if let RootResolve::Root(r, ..) = &resolved {
-                        if !scanned.contains(r) && scanning.insert(r.clone()) {
-                            scan_now = Some(r.clone());
-                        }
+                    if let RootResolve::Root(r, ..) = &resolved
+                        && !scanned.contains(r)
+                        && scanning.insert(r.clone())
+                    {
+                        scan_now = Some(r.clone());
                     }
                     // Publish whatever is knowable now: Nonrepo
                     // and Failed stand alone, while a root whose
@@ -809,11 +886,11 @@ fn poll_worker(
                         }
                     }
                     mapping.insert(candidate, resolved);
-                    if let Some(r) = scan_now {
-                        if !assign(&scan_tx, &wake_tx, &mut pending, r) {
-                            shutdown(handles, scan_tx, resolve_tx, wake_tx);
-                            return;
-                        }
+                    if let Some(r) = scan_now
+                        && !assign(&scan_tx, &wake_tx, &mut pending, r)
+                    {
+                        shutdown(handles, scan_tx, resolve_tx, wake_tx);
+                        return;
                     }
                 }
                 Outcome::Scanned {
@@ -827,10 +904,10 @@ fn poll_worker(
                     // root, including nested late resolvers.
                     let mut members = Vec::new();
                     for (c, r) in mapping.iter() {
-                        if let RootResolve::Root(rr, ..) = r {
-                            if *rr == root {
-                                members.push(c.clone());
-                            }
+                        if let RootResolve::Root(rr, ..) = r
+                            && *rr == root
+                        {
+                            members.push(c.clone());
                         }
                     }
                     for c in members {

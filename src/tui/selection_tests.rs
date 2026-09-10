@@ -334,3 +334,13 @@ fn horizontal_arrows_are_noops_in_a_single_column() {
     assert_eq!(sel.handle_key(key(KeyCode::Left)), Intent::None);
     assert_eq!(sel.selected_line(), 2);
 }
+
+#[test]
+fn replace_candidates_keeps_query_and_refilters() {
+    let mut sel = selection(&["/g1/a1", "/g1/a2", "/g2/b1"]);
+    type_text(&mut sel, "a1");
+    assert_eq!(entries(&sel), vec!["/g1/a1"]);
+    sel.replace_candidates(&["/g1/a1".into(), "/g2/b1".into()]);
+    assert_eq!(sel.query(), "a1");
+    assert_eq!(entries(&sel), vec!["/g1/a1"]);
+}

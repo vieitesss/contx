@@ -1,7 +1,9 @@
 use super::{
     Activation, Choice, CommandRunner, HerdrError, OpenError, RawOutput,
-    choose_from, open_with, pane_list, workspace_create, workspace_focus,
+    choose_from, open_with, pane_cwds_with, pane_list, workspace_create,
+    workspace_focus,
 };
+use crate::label::project_target_label;
 use crate::utils::test_utils::TempDir;
 use serde_json::json;
 use std::collections::VecDeque;
@@ -555,6 +557,88 @@ fn zero_matches_creates_with_canonical_cwd_and_tmux_label() {
 }
 
 #[test]
+fn create_label_equals_shared_label_policy() {
+    let d = TempDir::new();
+    let outside = TempDir::new();
+    let home = d.path().display().to_string();
+    let env = open_env(&home);
+    let relatives = [
+        "contx",
+        "work/something",
+        "personal/.dot",
+        "tester/proj",
+        "a/b/c",
+    ];
+    for rel in relatives {
+        let project = d.child(rel);
+        let path = project.display().to_string();
+        let label = project_target_label(&path, &env).unwrap();
+        let canonical = project.canonicalize().unwrap().display().to_string();
+        let mut runner = ScriptRunner::new(vec![
+            json_out(0, &pane_list_body(vec![])),
+            json_out(0, CREATE_OK),
+        ]);
+        let mut chooser = choose_cancel();
+        open_with(&path, &mut runner, &env, &mut chooser).unwrap();
+        assert_eq!(
+            runner.calls[1].1,
+            [
+                "workspace",
+                "create",
+                "--cwd",
+                canonical.as_str(),
+                "--label",
+                label.as_str(),
+                "--focus",
+            ],
+            "{rel}"
+        );
+    }
+    let project = outside.child("other/proj");
+    let path = project.display().to_string();
+    let label = project_target_label(&path, &env).unwrap();
+    let canonical = project.canonicalize().unwrap().display().to_string();
+    let mut runner = ScriptRunner::new(vec![
+        json_out(0, &pane_list_body(vec![])),
+        json_out(0, CREATE_OK),
+    ]);
+    let mut chooser = choose_cancel();
+    open_with(&path, &mut runner, &env, &mut chooser).unwrap();
+    assert_eq!(label, "proj");
+    assert_eq!(runner.calls[1].1[5], label);
+    assert_eq!(runner.calls[1].1[3], canonical);
+}
+
+#[test]
+fn invalid_candidate_runs_no_commands() {
+    let d = TempDir::new();
+    let project = d.child("work/foo");
+    let path = project.display().to_string();
+    let mut chooser = choose_cancel();
+
+    let env = test_env(&[("USER", "tester")]);
+    let mut runner = ScriptRunner::new(vec![]);
+    let err = open_with(&path, &mut runner, &env, &mut chooser).unwrap_err();
+    assert!(matches!(err, OpenError::InvalidCandidate(_)));
+    assert!(runner.calls.is_empty());
+
+    let nested = d.child("sub/proj");
+    let home = d.path().display().to_string();
+    let vars = [("HOME", home.as_str())];
+    let env = test_env(&vars);
+    let mut runner = ScriptRunner::new(vec![]);
+    let err = open_with(
+        &nested.display().to_string(),
+        &mut runner,
+        &env,
+        &mut chooser,
+    )
+    .unwrap_err();
+    assert!(matches!(err, OpenError::InvalidCandidate(_)));
+    assert!(runner.calls.is_empty());
+}
+
+#[test]
 fn several_ids_chooser_selects_focus() {
     let d = TempDir::new();
     let project = d.child("work/foo");
@@ -805,4 +889,32 @@ fn create_wrong_type_errors() {
     .unwrap_err();
 
     assert!(matches!(err, OpenError::MalformedResult));
+}
+
+#[test]
+fn pane_cwds_collects_cwd_and_foreground_without_duplicates() {
+    let mut runner = ScriptRunner::new(vec![json_out(
+        0,
+        &pane_list_body(vec![
+            pane("1", Some("/work/a"), Some("/work/b"), None),
+            pane("2", Some("/work/a"), None, None),
+            pane("3", Some(""), Some("/work/c"), None),
+        ]),
+    )]);
+    let env = test_env(&[]);
+    let cwds = pane_cwds_with(&mut runner, &env).unwrap();
+    assert_eq!(cwds, vec!["/work/a", "/work/b", "/work/c"]);
+}
+
+#[test]
+fn pane_cwds_wrong_type_is_garbage() {
+    let body = json!({
+        "id": "cli:pane:list",
+        "result": { "type": "workspace_info", "panes": [] }
+    })
+    .to_string();
+    let mut runner = ScriptRunner::new(vec![json_out(0, &body)]);
+    let env = test_env(&[]);
+    let err = pane_cwds_with(&mut runner, &env).unwrap_err();
+    assert!(matches!(err, HerdrError::GarbageJson));
 }

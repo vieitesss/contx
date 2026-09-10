@@ -1,6 +1,9 @@
+mod clone;
 mod config;
+mod delete;
 mod fuzzy;
 mod herdr;
+mod label;
 mod mux;
 mod theme;
 mod tmux;
@@ -38,26 +41,65 @@ fn main() -> io::Result<()> {
         Ok(config::Startup::Help) => {
             print!("{}", config::USAGE);
         }
-        Ok(config::Startup::Ready(resolved)) => {
-            let selected = ratatui::run(|terminal| {
-                Tui::new(&resolved.candidates, theme_mode).run(terminal)
-            })?;
-            if let Some(candidate) = selected {
-                let outcome = match resolved.multiplexer {
-                    Multiplexer::Auto => mux::activate_auto(&candidate),
-                    Multiplexer::Tmux => {
-                        mux::activate_explicit_tmux(&candidate)
+        Ok(config::Startup::Ready(resolved)) => match &resolved.command {
+            config::Command::Picker => {
+                let selected = ratatui::run(|terminal| {
+                    Tui::from_config(resolved.clone(), theme_mode).run(terminal)
+                })?;
+                if let Some(candidate) = selected {
+                    let outcome = match resolved.multiplexer {
+                        Multiplexer::Auto => mux::activate_auto(&candidate),
+                        Multiplexer::Tmux => {
+                            mux::activate_explicit_tmux(&candidate)
+                        }
+                        Multiplexer::Herdr => {
+                            mux::activate_explicit_herdr(&candidate)
+                        }
+                    };
+                    if let Some(diagnostic) = report_activation(outcome) {
+                        eprintln!("{diagnostic}");
+                        exit(1);
                     }
-                    Multiplexer::Herdr => {
-                        mux::activate_explicit_herdr(&candidate)
-                    }
-                };
-                if let Some(diagnostic) = report_activation(outcome) {
-                    eprintln!("{diagnostic}");
-                    exit(1);
                 }
             }
-        }
+            config::Command::Clone {
+                source,
+                destination,
+            } => match clone::run(&resolved, source, destination) {
+                Ok(_) => {}
+                Err(e) => {
+                    eprintln!("{e}");
+                    exit(1);
+                }
+            },
+            config::Command::Delete {
+                path,
+                dry_run,
+                permanent,
+                force,
+            } => {
+                let request = delete::DeleteRequest {
+                    path: path.clone(),
+                    dry_run: *dry_run,
+                    permanent: *permanent,
+                    force: *force,
+                };
+                match delete::run(&resolved, &request) {
+                    Ok(delete::DeleteOutcome::DryRun(_)) => {
+                        // `delete::run` already wrote the report once.
+                    }
+                    Ok(delete::DeleteOutcome::Deleted { .. })
+                    | Ok(delete::DeleteOutcome::Cancelled) => {}
+                    Err(e) => {
+                        eprint!("{e}");
+                        if !matches!(e, delete::DeleteError::Blocked(_)) {
+                            eprintln!();
+                        }
+                        exit(1);
+                    }
+                }
+            }
+        },
         Err(e) => {
             eprintln!("{e}");
             exit(1);

@@ -4,7 +4,6 @@ use std::{
     env,
     ffi::OsString,
     io::{self, ErrorKind::InvalidData},
-    path::Path,
     process::Command,
 };
 
@@ -89,62 +88,6 @@ fn is_tmux_process(env: &dyn Fn(&str) -> Option<OsString>) -> bool {
     matches!(env("TMUX"), Some(value) if !value.is_empty())
 }
 
-fn normalize_session_name(name: &str) -> String {
-    name.replace(".", "_")
-}
-
-/// Derive the tmux session name from a session candidate path, following
-/// the current path-based rules. Fails deliberately instead of panicking
-/// when the path has no usable file name or the environment lacks the
-/// variables the rules need.
-pub(crate) fn session_name(
-    candidate: &str,
-    env: &dyn Fn(&str) -> Option<OsString>,
-) -> Result<String, ActivationError> {
-    let invalid = || ActivationError::InvalidCandidate(candidate.to_string());
-    let p = Path::new(candidate);
-    let basename = p
-        .file_name()
-        .ok_or_else(invalid)?
-        .to_string_lossy()
-        .into_owned();
-    let parent_path = p.parent().ok_or_else(invalid)?;
-    let parent_dir = parent_path
-        .file_name()
-        .ok_or_else(invalid)?
-        .to_string_lossy()
-        .into_owned();
-    let home = env("HOME")
-        .ok_or_else(invalid)?
-        .to_string_lossy()
-        .into_owned();
-
-    let final_name: String;
-    if parent_path.strip_prefix(&home).is_ok() {
-        let grandparent = parent_path.parent().ok_or_else(invalid)?;
-        if grandparent
-            .strip_prefix(&home)
-            .is_ok_and(|res| res.is_empty())
-        {
-            let user = env("USER")
-                .ok_or_else(invalid)?
-                .to_string_lossy()
-                .into_owned();
-            if parent_dir != user {
-                final_name = vec![&parent_dir, "_", &basename].join("");
-            } else {
-                final_name = basename;
-            }
-        } else {
-            final_name = vec![&parent_dir, "_", &basename].join("");
-        }
-    } else {
-        final_name = basename
-    }
-
-    Ok(normalize_session_name(&final_name))
-}
-
 fn has_session(runner: &mut dyn CommandRunner, session: &str) -> CommandResult {
     classify(runner.run(&["has-session", "-t", session]))
 }
@@ -184,7 +127,8 @@ fn open_with(
         return Err(ActivationError::NotInTmux);
     }
 
-    let session = session_name(candidate, env)?;
+    let session = crate::label::project_target_label(candidate, env)
+        .map_err(|e| ActivationError::InvalidCandidate(e.0))?;
 
     match has_session(runner, &session) {
         CommandResult::Failed(cause) => {
@@ -214,6 +158,35 @@ fn create_then_switch(
             Err(ActivationError::CreateFailed { session, cause })
         }
     }
+}
+
+/// List every pane's current path (`list-panes -a -F #{pane_current_path}`).
+pub(crate) fn pane_cwds() -> Result<Vec<String>, TmuxError> {
+    pane_cwds_with(&mut ProductionRunner)
+}
+
+fn pane_cwds_with(
+    runner: &mut dyn CommandRunner,
+) -> Result<Vec<String>, TmuxError> {
+    let output = runner
+        .run(&["list-panes", "-a", "-F", "#{pane_current_path}"])
+        .map_err(TmuxError::IoError)?;
+    if !output.success {
+        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        return Err(TmuxError::CommandFailed(io::Error::other(stderr)));
+    }
+    let text = String::from_utf8(output.stdout).map_err(|_| {
+        TmuxError::IoError(io::Error::new(
+            InvalidData,
+            "tmux printed invalid UTF-8",
+        ))
+    })?;
+    Ok(text
+        .lines()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect())
 }
 
 /// Switch to an observed session. Absence at switch time means the observed

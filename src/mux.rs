@@ -6,6 +6,7 @@ use std::{
     process::Command,
 };
 
+use crate::config::Multiplexer;
 use crate::herdr;
 use crate::tmux;
 
@@ -315,6 +316,70 @@ pub fn activate_explicit_herdr(
         &|name| env::var_os(name),
         &mut herdr::open,
     )
+}
+
+/// Result of listing pane working directories for active-target detection.
+/// `Skipped` means the selected multiplexer context is not live; `Failed`
+/// means the context is live but listing did not succeed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PaneCwdOutcome {
+    Skipped,
+    Listed(Vec<String>),
+    Failed,
+}
+
+fn map_list(result: Result<Vec<String>, ()>) -> PaneCwdOutcome {
+    match result {
+        Ok(cwds) => PaneCwdOutcome::Listed(cwds),
+        Err(()) => PaneCwdOutcome::Failed,
+    }
+}
+
+/// List pane cwds for the invocation's selected multiplexer only.
+pub(crate) fn pane_cwds(multiplexer: Multiplexer) -> PaneCwdOutcome {
+    let tty = controlling_tty();
+    pane_cwds_with(
+        multiplexer,
+        &|name| env::var_os(name),
+        tty.as_deref(),
+        &mut || {
+            let mut runner = ProductionRunner;
+            probe_tmux_ttys(&mut runner)
+        },
+        &mut || tmux::pane_cwds().map_err(|_| ()),
+        &mut || herdr::pane_cwds().map_err(|_| ()),
+    )
+}
+
+fn pane_cwds_with(
+    multiplexer: Multiplexer,
+    env: &dyn Fn(&str) -> Option<OsString>,
+    tty: Option<&str>,
+    probe: &mut dyn FnMut() -> Result<TmuxTtys, TmuxProbeError>,
+    tmux_list: &mut dyn FnMut() -> Result<Vec<String>, ()>,
+    herdr_list: &mut dyn FnMut() -> Result<Vec<String>, ()>,
+) -> PaneCwdOutcome {
+    match multiplexer {
+        Multiplexer::Tmux => {
+            if !env_nonempty(env, "TMUX") {
+                return PaneCwdOutcome::Skipped;
+            }
+            map_list(tmux_list())
+        }
+        Multiplexer::Herdr => {
+            if !herdr_context(env) {
+                return PaneCwdOutcome::Skipped;
+            }
+            map_list(herdr_list())
+        }
+        Multiplexer::Auto => match detect_auto(env, tty, probe) {
+            Ok(Backend::Tmux) => map_list(tmux_list()),
+            Ok(Backend::Herdr) => map_list(herdr_list()),
+            Err(DetectError::Outside) => PaneCwdOutcome::Skipped,
+            Err(DetectError::MissingSocket) => PaneCwdOutcome::Skipped,
+            Err(_) => PaneCwdOutcome::Failed,
+        },
+    }
 }
 
 /// Controlling TTY name, or `None` when it cannot be obtained.

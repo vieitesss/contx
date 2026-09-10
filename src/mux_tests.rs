@@ -1,8 +1,9 @@
 use super::{
     ActivateError, ActivateResult, Backend, CommandRunner, DetectError,
-    RawOutput, TmuxProbeError, TmuxTtys, activate_auto_with,
-    activate_explicit_herdr_with, detect_auto, probe_tmux_ttys,
+    PaneCwdOutcome, RawOutput, TmuxProbeError, TmuxTtys, activate_auto_with,
+    activate_explicit_herdr_with, detect_auto, pane_cwds_with, probe_tmux_ttys,
 };
+use crate::config::Multiplexer;
 use crate::herdr;
 use crate::tmux;
 use crate::tmux::errors::ActivationError;
@@ -373,4 +374,102 @@ fn explicit_herdr_with_context_invokes_open() {
     let outcome =
         activate_explicit_herdr_with("/tmp/proj", &env, &mut herdr_ok).unwrap();
     assert_eq!(outcome, ActivateResult::Completed);
+}
+
+fn panes(
+    mux: Multiplexer,
+    vars: &[(&str, &str)],
+    tty: Option<&str>,
+    probe: Result<TmuxTtys, TmuxProbeError>,
+    tmux: Result<Vec<String>, ()>,
+    herdr: Result<Vec<String>, ()>,
+) -> PaneCwdOutcome {
+    let env = test_env(vars);
+    pane_cwds_with(
+        mux,
+        &env,
+        tty,
+        &mut || probe.clone(),
+        &mut || tmux.clone(),
+        &mut || herdr.clone(),
+    )
+}
+
+#[test]
+fn pane_cwds_auto_outside_skips() {
+    assert_eq!(
+        panes(
+            Multiplexer::Auto,
+            &[],
+            None,
+            Err(TmuxProbeError::Io),
+            Ok(vec!["/x".into()]),
+            Ok(vec!["/y".into()]),
+        ),
+        PaneCwdOutcome::Skipped
+    );
+}
+
+#[test]
+fn pane_cwds_explicit_tmux_without_context_skips() {
+    assert_eq!(
+        panes(
+            Multiplexer::Tmux,
+            &[],
+            Some(PANE),
+            Ok(ttys(&[PANE], &[])),
+            Ok(vec!["/x".into()]),
+            Ok(vec!["/y".into()]),
+        ),
+        PaneCwdOutcome::Skipped
+    );
+}
+
+#[test]
+fn pane_cwds_explicit_tmux_lists_or_fails() {
+    let listed = panes(
+        Multiplexer::Tmux,
+        &[("TMUX", TMUX)],
+        Some(PANE),
+        Ok(ttys(&[PANE], &[])),
+        Ok(vec!["/work/a".into()]),
+        Ok(vec!["/herdr".into()]),
+    );
+    assert_eq!(listed, PaneCwdOutcome::Listed(vec!["/work/a".into()]));
+
+    let failed = panes(
+        Multiplexer::Tmux,
+        &[("TMUX", TMUX)],
+        Some(PANE),
+        Ok(ttys(&[PANE], &[])),
+        Err(()),
+        Ok(vec!["/herdr".into()]),
+    );
+    assert_eq!(failed, PaneCwdOutcome::Failed);
+}
+
+#[test]
+fn pane_cwds_explicit_herdr_lists_only_herdr() {
+    let listed = panes(
+        Multiplexer::Herdr,
+        &[("HERDR_ENV", "1"), ("HERDR_SOCKET_PATH", SOCK)],
+        None,
+        Err(TmuxProbeError::Io),
+        Ok(vec!["/tmux".into()]),
+        Ok(vec!["/herdr".into()]),
+    );
+    assert_eq!(listed, PaneCwdOutcome::Listed(vec!["/herdr".into()]));
+}
+
+#[test]
+fn pane_cwds_auto_tmux_does_not_list_herdr() {
+    let listed = panes(
+        Multiplexer::Auto,
+        &[("TMUX", TMUX)],
+        Some(PANE),
+        Ok(ttys(&[PANE], &[])),
+        Ok(vec!["/tmux".into()]),
+        Ok(vec!["/herdr".into()]),
+    );
+    assert_eq!(listed, PaneCwdOutcome::Listed(vec!["/tmux".into()]));
 }

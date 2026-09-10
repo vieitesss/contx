@@ -1,6 +1,6 @@
 use super::{
-    ConfigError, Multiplexer, SessionCandidate, Startup, merge_paths,
-    resolve_with,
+    Command, ConfigError, Multiplexer, SessionCandidate, Startup,
+    append_parent_to_paths, destination_covered, merge_paths, resolve_with,
 };
 use crate::utils::test_utils::TempDir;
 use std::ffi::OsString;
@@ -676,4 +676,396 @@ fn help_flags_are_not_errors() {
         resolve_startup(&["--multiplexer", "tmux", "-h"], &[]).unwrap(),
         Startup::Help
     );
+    assert_eq!(
+        resolve_startup(&["clone", "-h", "src", "dest"], &[]).unwrap(),
+        Startup::Help
+    );
+    assert_eq!(
+        resolve_startup(&["delete", "--help", "path"], &[]).unwrap(),
+        Startup::Help
+    );
+}
+
+#[test]
+fn usage_documents_clone_and_delete() {
+    assert!(super::USAGE.contains("clone <source> <destination>"));
+    assert!(
+        super::USAGE
+            .contains("delete [--dry-run] [--permanent] [--force] <path>")
+    );
+    let usage = super::USAGE.to_lowercase();
+    assert!(!usage.contains("remove"));
+    assert!(!usage.contains("removal"));
+}
+
+#[test]
+fn picker_is_the_default_command() {
+    let d = TempDir::new();
+    let resolved = resolve_ready(&[], &home_env(d.path())).unwrap();
+    assert_eq!(resolved.command, Command::Picker);
+}
+
+#[test]
+fn clone_requires_source_and_destination() {
+    let res = resolve_startup(&["clone"], &[]);
+    assert!(matches!(res, Err(ConfigError::ArgNotFound)));
+    let res = resolve_startup(&["clone", "src"], &[]);
+    assert!(matches!(res, Err(ConfigError::ArgNotFound)));
+}
+
+#[test]
+fn clone_parses_source_and_destination() {
+    let d = TempDir::new();
+    let resolved = resolve_ready(
+        &["clone", "git@host:src.git", "dest"],
+        &home_env(d.path()),
+    )
+    .unwrap();
+    assert_eq!(
+        resolved.command,
+        Command::Clone {
+            source: "git@host:src.git".to_string(),
+            destination: "dest".to_string(),
+        }
+    );
+}
+
+#[test]
+fn clone_rejects_extra_operands() {
+    let res = resolve_startup(&["clone", "a", "b", "c"], &[]);
+    assert!(matches!(res, Err(ConfigError::ArgIsNotValid(_))));
+}
+
+#[test]
+fn clone_keeps_global_flags() {
+    let d = TempDir::new();
+    let cfg = d.file("config.toml", "paths = []\nmultiplexer = \"tmux\"\n");
+    let cfg = cfg.to_str().unwrap();
+
+    let before = resolve_ready(
+        &["-c", cfg, "--multiplexer", "herdr", "clone", "src", "dest"],
+        &[],
+    )
+    .unwrap();
+    assert_eq!(before.multiplexer, Multiplexer::Herdr);
+    assert_eq!(
+        before.command,
+        Command::Clone {
+            source: "src".to_string(),
+            destination: "dest".to_string(),
+        }
+    );
+
+    let after = resolve_ready(
+        &["clone", "src", "dest", "-c", cfg, "--multiplexer", "herdr"],
+        &[],
+    )
+    .unwrap();
+    assert_eq!(after.multiplexer, Multiplexer::Herdr);
+    assert_eq!(after.command, before.command);
+}
+
+#[test]
+fn delete_requires_a_path() {
+    let res = resolve_startup(&["delete"], &[]);
+    assert!(matches!(res, Err(ConfigError::ArgNotFound)));
+    let res = resolve_startup(&["delete", "--permanent"], &[]);
+    assert!(matches!(res, Err(ConfigError::ArgNotFound)));
+}
+
+#[test]
+fn delete_parses_path_and_flags() {
+    let d = TempDir::new();
+    let resolved = resolve_ready(
+        &["delete", "--dry-run", "--permanent", "~/proj"],
+        &home_env(d.path()),
+    )
+    .unwrap();
+    assert_eq!(
+        resolved.command,
+        Command::Delete {
+            path: "~/proj".to_string(),
+            dry_run: true,
+            permanent: true,
+            force: false,
+        }
+    );
+}
+
+#[test]
+fn delete_flags_may_follow_the_path() {
+    let d = TempDir::new();
+    let resolved =
+        resolve_ready(&["delete", "/tmp/proj", "--force"], &home_env(d.path()))
+            .unwrap();
+    assert_eq!(
+        resolved.command,
+        Command::Delete {
+            path: "/tmp/proj".to_string(),
+            dry_run: false,
+            permanent: false,
+            force: true,
+        }
+    );
+}
+
+#[test]
+fn delete_rejects_force_with_dry_run_in_either_order() {
+    for args in [
+        ["delete", "--force", "--dry-run", "path"].as_slice(),
+        ["delete", "--dry-run", "--force", "path"].as_slice(),
+        ["delete", "--force", "--permanent", "--dry-run", "path"].as_slice(),
+    ] {
+        let res = resolve_startup(args, &[]);
+        assert!(matches!(res, Err(ConfigError::ForceWithDryRun)), "{args:?}");
+    }
+}
+
+#[test]
+fn delete_allows_permanent_with_dry_run() {
+    let d = TempDir::new();
+    let resolved = resolve_ready(
+        &["delete", "--permanent", "--dry-run", "path"],
+        &home_env(d.path()),
+    )
+    .unwrap();
+    assert_eq!(
+        resolved.command,
+        Command::Delete {
+            path: "path".to_string(),
+            dry_run: true,
+            permanent: true,
+            force: false,
+        }
+    );
+}
+
+#[test]
+fn delete_rejects_extra_operands_and_unknown_flags() {
+    let res = resolve_startup(&["delete", "a", "b"], &[]);
+    assert!(matches!(res, Err(ConfigError::ArgIsNotValid(_))));
+    let res = resolve_startup(&["delete", "--bogus", "path"], &[]);
+    assert!(matches!(res, Err(ConfigError::ArgIsNotValid(_))));
+    let res = resolve_startup(&["--dry-run"], &[]);
+    assert!(matches!(res, Err(ConfigError::ArgIsNotValid(_))));
+}
+
+#[test]
+fn delete_keeps_global_flags() {
+    let d = TempDir::new();
+    let cfg = d.file("config.toml", "paths = []\n");
+    let cfg = cfg.to_str().unwrap();
+    let resolved =
+        resolve_ready(&["-c", cfg, "delete", "--force", "path"], &[]).unwrap();
+    assert_eq!(resolved.multiplexer, Multiplexer::Auto);
+    assert_eq!(
+        resolved.command,
+        Command::Delete {
+            path: "path".to_string(),
+            dry_run: false,
+            permanent: false,
+            force: true,
+        }
+    );
+}
+
+fn covered(
+    dest: &str,
+    paths: &[&str],
+    git_from_home: bool,
+    home: &Path,
+) -> bool {
+    let paths: Vec<String> = paths.iter().map(|s| s.to_string()).collect();
+    let home = home.display().to_string();
+    destination_covered(dest, &paths, git_from_home, &|name| {
+        (name == "HOME").then(|| OsString::from(&home))
+    })
+    .unwrap()
+}
+
+#[test]
+fn permanent_delete_defaults_false_when_omitted_or_missing_file() {
+    let d = TempDir::new();
+    let missing = resolve_ready(&[], &home_env(d.path())).unwrap();
+    assert!(!missing.permanent_delete);
+    assert!(!missing.config_existed);
+    assert!(missing.paths.is_empty());
+    assert!(!missing.git_from_home);
+    assert_eq!(
+        missing.config_path,
+        format!("{}/.config/contx/config.toml", d.path().display())
+    );
+
+    let cfg = d.file("config.toml", "paths = []\n");
+    let omitted = resolve_ready(&["-c", cfg.to_str().unwrap()], &[]).unwrap();
+    assert!(!omitted.permanent_delete);
+    assert!(omitted.config_existed);
+    assert_eq!(omitted.config_path, cfg.display().to_string());
+    assert!(omitted.paths.is_empty());
+}
+
+#[test]
+fn permanent_delete_kebab_case_loads() {
+    let d = TempDir::new();
+    let enabled = d.file("on.toml", "permanent-delete = true\n");
+    let resolved =
+        resolve_ready(&["-c", enabled.to_str().unwrap()], &[]).unwrap();
+    assert!(resolved.permanent_delete);
+    assert!(resolved.config_existed);
+
+    let disabled = d.file("off.toml", "permanent-delete = false\n");
+    let resolved =
+        resolve_ready(&["-c", disabled.to_str().unwrap()], &[]).unwrap();
+    assert!(!resolved.permanent_delete);
+}
+
+#[test]
+fn resolve_keeps_raw_paths_and_git_from_home() {
+    let d = TempDir::new();
+    d.child("home/work/project");
+    let home = d.child("home");
+    let cfg = d.file(
+        "config.toml",
+        "paths = [\"~/work\"]\ngit-from-home = true\n",
+    );
+    let resolved =
+        resolve_ready(&["-c", cfg.to_str().unwrap()], &home_env(&home))
+            .unwrap();
+    assert_eq!(resolved.paths, vec!["~/work".to_string()]);
+    assert!(resolved.git_from_home);
+}
+
+#[test]
+fn directory_path_covers_immediate_child_not_grandchild() {
+    let d = TempDir::new();
+    let home = d.path();
+    assert!(covered("~/path/repo", &["~/path"], false, home));
+    assert!(covered("~/path/repo/", &["~/path/"], false, home));
+    assert!(!covered("~/path/dir/repo", &["~/path"], false, home));
+    assert!(!covered("~/other/repo", &["~/path"], false, home));
+}
+
+#[test]
+fn wildcard_path_covers_grandchild_not_child() {
+    let d = TempDir::new();
+    let home = d.path();
+    assert!(covered("~/path/dir/repo", &["~/path/*"], false, home));
+    assert!(!covered("~/path/repo", &["~/path/*"], false, home));
+    assert!(!covered("~/path/dir/sub/repo", &["~/path/*"], false, home));
+}
+
+#[test]
+fn coverage_does_not_require_destination_to_exist() {
+    let d = TempDir::new();
+    let dest = d.path().join("missing/repo");
+    assert!(!dest.exists());
+    assert!(covered(
+        dest.to_str().unwrap(),
+        &[&d.path().join("missing").display().to_string()],
+        false,
+        d.path(),
+    ));
+}
+
+#[test]
+fn git_from_home_covers_immediate_home_child() {
+    let d = TempDir::new();
+    let home = d.path();
+    assert!(covered("~/repo", &[], true, home));
+    assert!(!covered("~/dir/repo", &[], true, home));
+    assert!(!covered("~/repo", &[], false, home));
+}
+
+#[test]
+fn coverage_accepts_env_var_paths() {
+    let d = TempDir::new();
+    let work = d.child("work");
+    let dest = format!("{}/repo", work.display());
+    let paths = ["$WORKROOT".to_string()];
+    let work_s = work.display().to_string();
+    let home = d.path().display().to_string();
+    let ok = destination_covered(&dest, &paths, false, &|name| match name {
+        "HOME" => Some(OsString::from(&home)),
+        "WORKROOT" => Some(OsString::from(&work_s)),
+        _ => None,
+    })
+    .unwrap();
+    assert!(ok);
+}
+
+#[test]
+fn append_parent_preserves_comments_and_unknown_keys() {
+    let d = TempDir::new();
+    let cfg = d.file(
+        "config.toml",
+        "# keep me\npaths = [\"~/work\"]\nextra = 1\n",
+    );
+    let dest = d.path().join("foo/repo");
+    append_parent_to_paths(
+        dest.to_str().unwrap(),
+        cfg.to_str().unwrap(),
+        &|_| None,
+    )
+    .unwrap();
+    let text = fs::read_to_string(&cfg).unwrap();
+    assert!(text.contains("# keep me"));
+    assert!(text.contains("extra = 1"));
+    assert!(text.contains("~/work"));
+    let parent = d.path().join("foo");
+    assert!(text.contains(&format!("\"{}\"", parent.display())));
+    assert!(!text.contains("repo"));
+}
+
+#[test]
+fn append_parent_creates_missing_config_with_parent_only() {
+    let d = TempDir::new();
+    let cfg = d.path().join(".config/contx/config.toml");
+    let dest = format!("{}/foo/repo", d.path().display());
+    append_parent_to_paths(&dest, cfg.to_str().unwrap(), &|_| None).unwrap();
+    let text = fs::read_to_string(&cfg).unwrap();
+    let parsed: toml::Value = toml::from_str(&text).unwrap();
+    let paths = parsed["paths"].as_array().unwrap();
+    assert_eq!(paths.len(), 1);
+    assert_eq!(
+        paths[0].as_str().unwrap(),
+        format!("{}/foo", d.path().display())
+    );
+    assert_eq!(parsed.as_table().unwrap().len(), 1);
+    assert!(!text.contains("repo"));
+}
+
+#[test]
+fn append_parent_adds_paths_key_when_missing() {
+    let d = TempDir::new();
+    let cfg = d.file("config.toml", "git-from-home = true\n");
+    let dest = format!("{}/foo/repo", d.path().display());
+    append_parent_to_paths(&dest, cfg.to_str().unwrap(), &|_| None).unwrap();
+    let text = fs::read_to_string(&cfg).unwrap();
+    assert!(text.contains("git-from-home = true"));
+    let parsed: toml::Value = toml::from_str(&text).unwrap();
+    assert_eq!(
+        parsed["paths"].as_array().unwrap()[0].as_str().unwrap(),
+        format!("{}/foo", d.path().display())
+    );
+}
+
+#[test]
+fn resolved_config_covers_and_appends_through_methods() {
+    let d = TempDir::new();
+    let parent = d.child("work");
+    let cfg = d.file(
+        "config.toml",
+        &format!("paths = [\"{}\"]\n", parent.display()),
+    );
+    let resolved = resolve_ready(&["-c", cfg.to_str().unwrap()], &[]).unwrap();
+    let dest = format!("{}/repo", parent.display());
+    assert!(resolved.destination_covered(&dest, &|_| None).unwrap());
+
+    let uncovered = format!("{}/other/repo", d.path().display());
+    assert!(!resolved.destination_covered(&uncovered, &|_| None).unwrap());
+    resolved
+        .append_parent_to_paths(&uncovered, &|_| None)
+        .unwrap();
+    let text = fs::read_to_string(&cfg).unwrap();
+    assert!(text.contains(&format!("\"{}/other\"", d.path().display())));
 }
