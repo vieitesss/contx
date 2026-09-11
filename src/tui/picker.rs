@@ -24,7 +24,8 @@ use terminal_colorsaurus::ThemeMode;
 /// In-picker action menu opened by Ctrl-X, then a sequential key.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ActionMenu {
-    /// None = no explicit navigation yet, 0 = clone, 1 = delete.
+    /// None = no explicit navigation yet, 0 = clone, 1 = new
+    /// directory, 2 = delete.
     pub selected: Option<usize>,
     pub delete_enabled: bool,
 }
@@ -128,6 +129,12 @@ impl Picker {
                 self.menu = None;
                 Intent::Clone
             }
+            KeyCode::Char('n') | KeyCode::Char('N')
+                if key.modifiers.is_empty() =>
+            {
+                self.menu = None;
+                Intent::NewDir
+            }
             KeyCode::Char('d') | KeyCode::Char('D')
                 if key.modifiers.is_empty() =>
             {
@@ -135,22 +142,29 @@ impl Picker {
             }
             KeyCode::Up | KeyCode::Char('k') => {
                 if let Some(menu) = &mut self.menu {
-                    menu.selected = Some(0);
+                    menu.selected =
+                        Some(menu.selected.map_or(0, |s| s.saturating_sub(1)));
                 }
                 Intent::None
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                if let Some(menu) = &mut self.menu
-                    && menu.delete_enabled
-                {
-                    menu.selected = Some(1);
+                if let Some(menu) = &mut self.menu {
+                    menu.selected = match menu.selected {
+                        None | Some(0) => Some(1),
+                        Some(1) if menu.delete_enabled => Some(2),
+                        Some(s) => Some(s),
+                    };
                 }
                 Intent::None
             }
             KeyCode::Enter => {
                 let selected = self.menu.as_ref().and_then(|m| m.selected);
                 match selected {
-                    Some(1) => self.take_delete(),
+                    Some(2) => self.take_delete(),
+                    Some(1) => {
+                        self.menu = None;
+                        Intent::NewDir
+                    }
                     Some(0) | None => {
                         self.menu = None;
                         Intent::Clone

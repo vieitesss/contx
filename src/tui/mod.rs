@@ -158,6 +158,7 @@ impl Tui {
                 self.outcome = Some(Some(candidate));
             }
             Intent::Clone => self.open_clone_dialog(),
+            Intent::NewDir => self.open_new_dir_dialog(),
             Intent::Delete(path) => self.open_delete_dialog(path),
         }
     }
@@ -201,6 +202,22 @@ impl Tui {
             },
         );
         dialog.set_transport(Box::new(PortablePty));
+        if let Some(cfg) = &self.config {
+            dialog.set_config_append(Box::new(ThreadedConfigAppend::new(
+                cfg.clone(),
+            )));
+        }
+        self.dialog = Some(dialog);
+    }
+
+    fn open_new_dir_dialog(&mut self) {
+        let parent = self.picker.clone_dest_parent();
+        let mut dialog = ActionDialog::open_new_dir(
+            parent,
+            FsCloneProbe {
+                config: self.config.clone(),
+            },
+        );
         if let Some(cfg) = &self.config {
             dialog.set_config_append(Box::new(ThreadedConfigAppend::new(
                 cfg.clone(),
@@ -264,6 +281,7 @@ impl Tui {
         let path = dialog.mutation_path().unwrap_or("").to_string();
         let generation = dialog.generation();
         let is_clone = dialog.is_clone();
+        let is_new_dir = dialog.is_new_dir();
         let config_error = match dialog.outcome() {
             Some(DialogOutcome::Completed { config_error, .. }) => {
                 config_error.clone()
@@ -272,6 +290,11 @@ impl Tui {
         };
         let kind = if is_clone {
             RefreshKind::Clone {
+                dest: path,
+                config_error,
+            }
+        } else if is_new_dir {
+            RefreshKind::Create {
                 dest: path,
                 config_error,
             }
@@ -296,6 +319,9 @@ impl Tui {
             RefreshKind::Clone {
                 config_error: Some(_),
                 ..
+            } | RefreshKind::Create {
+                config_error: Some(_),
+                ..
             }
         );
         if sticky {
@@ -304,6 +330,7 @@ impl Tui {
         }
         let msg = match kind {
             RefreshKind::Clone { dest, .. } => format!("cloned to `{dest}`"),
+            RefreshKind::Create { dest, .. } => format!("created `{dest}`"),
             RefreshKind::Delete { path } => format!("deleted `{path}`"),
         };
         self.dialog = None;
@@ -328,7 +355,8 @@ impl Tui {
         match ev.result {
             Ok(cands) => {
                 match &ev.kind {
-                    RefreshKind::Clone { dest, .. } => {
+                    RefreshKind::Clone { dest, .. }
+                    | RefreshKind::Create { dest, .. } => {
                         self.picker.refresh_after_clone(&cands, dest);
                     }
                     RefreshKind::Delete { path } => {
@@ -341,6 +369,10 @@ impl Tui {
                 }
                 let sticky = match &ev.kind {
                     RefreshKind::Clone {
+                        config_error: Some(_),
+                        ..
+                    } => true,
+                    RefreshKind::Create {
                         config_error: Some(_),
                         ..
                     } => true,
@@ -360,6 +392,9 @@ impl Tui {
                 let msg = match ev.kind {
                     RefreshKind::Clone { dest, .. } => {
                         format!("cloned to `{dest}`")
+                    }
+                    RefreshKind::Create { dest, .. } => {
+                        format!("created `{dest}`")
                     }
                     RefreshKind::Delete { path } => {
                         format!("deleted `{path}`")

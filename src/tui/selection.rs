@@ -12,6 +12,7 @@ pub enum Intent {
     Exit,
     Activate(String),
     Clone,
+    NewDir,
     Delete(String),
 }
 

@@ -49,7 +49,7 @@ fn dialog() -> ActionDialog {
 }
 
 fn fill_valid(dialog: &mut ActionDialog) {
-    type_text(dialog, "git@example.com:acme/repo.git");
+    type_text(dialog, "acme/repo.git");
     assert_eq!(dialog.dest(), "repo");
 }
 
@@ -94,7 +94,7 @@ fn valid_clone_spawns_git_clone_and_freezes() {
             vec![
                 "git".into(),
                 "clone".into(),
-                "git@example.com:acme/repo.git".into(),
+                "https://github.com/acme/repo.git".into(),
                 "/work/repo".into(),
             ],
             PtySize { cols: 80, rows: 24 }

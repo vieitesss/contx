@@ -104,13 +104,18 @@ fn picker_idle_left_collapse_only_when_collapse() {
 }
 
 #[test]
-fn prefix_always_shows_clone_delete_cancel_and_quit() {
+fn prefix_always_shows_clone_new_dir_delete_cancel_and_quit() {
     let chips = prefix(false, None);
     assert_eq!(
         chips,
         vec![
             HintChip {
                 label: "c Clone",
+                enabled: true,
+                selected: false,
+            },
+            HintChip {
+                label: "n New directory",
                 enabled: true,
                 selected: false,
             },
@@ -148,6 +153,38 @@ fn prefix_clone_navigation_highlights_only_clone() {
                 selected: true,
             },
             HintChip {
+                label: "n New directory",
+                enabled: true,
+                selected: false,
+            },
+            HintChip {
+                label: "d Delete",
+                enabled: true,
+                selected: false,
+            },
+            on("Esc/Ctrl-X Cancel"),
+            on("Ctrl-C Quit"),
+        ]
+    );
+}
+
+#[test]
+fn prefix_new_dir_navigation_highlights_only_new_dir() {
+    let chips = prefix(true, Some(1));
+    assert_eq!(
+        chips,
+        vec![
+            HintChip {
+                label: "c Clone",
+                enabled: true,
+                selected: false,
+            },
+            HintChip {
+                label: "n New directory",
+                enabled: true,
+                selected: true,
+            },
+            HintChip {
                 label: "d Delete",
                 enabled: true,
                 selected: false,
@@ -160,12 +197,17 @@ fn prefix_clone_navigation_highlights_only_clone() {
 
 #[test]
 fn prefix_delete_enabled_can_be_selected() {
-    let chips = prefix(true, Some(1));
+    let chips = prefix(true, Some(2));
     assert_eq!(
         chips,
         vec![
             HintChip {
                 label: "c Clone",
+                enabled: true,
+                selected: false,
+            },
+            HintChip {
+                label: "n New directory",
                 enabled: true,
                 selected: false,
             },

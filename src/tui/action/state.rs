@@ -1,5 +1,18 @@
 use super::field::Field;
 
+/// Source text prefilled into the picker's clone source field. The
+/// user completes it with a repository path (`owner/repo`).
+pub(crate) const DEFAULT_CLONE_SOURCE: &str = "https://github.com/";
+
+/// What the clone dialog does with a valid destination: run
+/// `git clone`, or create an empty directory. Both share the
+/// destination field, the add-parent offer, and the result stage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CloneKind {
+    Repository,
+    Directory,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CloneStage {
     SourceDest,
@@ -128,6 +141,7 @@ pub(crate) enum CloneAuth {
 }
 
 pub(crate) struct CloneForm {
+    pub kind: CloneKind,
     pub stage: CloneStage,
     pub source: Field,
     pub dest: Field,
@@ -140,10 +154,15 @@ pub(crate) struct CloneForm {
 }
 
 impl CloneForm {
-    pub(crate) fn new(parent: Option<String>) -> Self {
+    pub(crate) fn new(parent: Option<String>, kind: CloneKind) -> Self {
+        let mut source = Field::new();
+        if kind == CloneKind::Repository {
+            source.set_str(DEFAULT_CLONE_SOURCE);
+        }
         Self {
+            kind,
             stage: CloneStage::SourceDest,
-            source: Field::new(),
+            source,
             dest: Field::new(),
             dest_edited: false,
             prompt: Field::new(),
@@ -156,6 +175,27 @@ impl CloneForm {
 
     pub(crate) fn git_started(&self) -> bool {
         self.stage != CloneStage::SourceDest
+    }
+
+    /// Accordion length: git clone has four stages; creating a
+    /// directory collapses authentication and run into the result.
+    pub(crate) fn stage_n(&self) -> usize {
+        match self.kind {
+            CloneKind::Repository => 4,
+            CloneKind::Directory => 2,
+        }
+    }
+
+    /// Display index for the current stage. Directory mode never
+    /// enters `Authenticate`/`Clone`, so `Result` is the second row.
+    pub(crate) fn stage_index(&self) -> usize {
+        match self.kind {
+            CloneKind::Repository => self.stage.index(),
+            CloneKind::Directory => match self.stage {
+                CloneStage::Result => 1,
+                _ => 0,
+            },
+        }
     }
 }
 

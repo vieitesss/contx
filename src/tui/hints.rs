@@ -311,9 +311,14 @@ fn prefix_hints(
             selected: selected == Some(0),
         },
         HintChip {
+            label: "n New directory",
+            enabled: true,
+            selected: selected == Some(1),
+        },
+        HintChip {
             label: "d Delete",
             enabled: delete_enabled,
-            selected: delete_enabled && selected == Some(1),
+            selected: delete_enabled && selected == Some(2),
         },
         on("Esc/Ctrl-X Cancel"),
         on("Ctrl-C Quit"),

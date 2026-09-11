@@ -28,7 +28,7 @@ use field::Field;
 use prompt::{Interaction, PromptDecoder, PromptKind};
 pub(crate) use pty::PtyEvent;
 use pty::{PtySession, PtySize, PtyTransport};
-use state::{CloneAuth, CloneForm, DeleteForm};
+use state::{CloneAuth, CloneForm, CloneKind, DeleteForm};
 
 pub(crate) use clone_flow::{ConfigAppend, ConfigAppendEvent};
 pub(crate) use delete_flow::{
@@ -104,45 +104,44 @@ impl ActionDialog {
         parent: Option<String>,
         probe: impl CloneDestProbe + 'static,
     ) -> Self {
-        let mut dialog = Self {
-            op: Op::Clone {
-                form: CloneForm::new(parent),
+        Self::open(
+            Op::Clone {
+                form: CloneForm::new(parent, CloneKind::Repository),
                 probe: Box::new(probe),
             },
-            focus: 0,
-            selected_stage: 0,
-            inspect: None,
-            view_scroll: 0,
-            generation: 1,
-            hint: String::new(),
-            outcome: None,
-            cancel: CancelState::Idle,
-            grace_at: None,
-            pty: None,
-            job_generation: 0,
-            log: vec![],
-            transport: None,
-            config_append: None,
-            decoder: PromptDecoder::new(24, 80),
-            clone_job: None,
-            refresh_requested: false,
-            awaiting_config: false,
-            inspect_worker: None,
-            mutate_worker: None,
-            delete_job: None,
-            awaiting_inspect: false,
-            awaiting_mutate: false,
-            mutation_path: None,
-        };
-        dialog.focus_item(FocusItem::Source);
-        dialog
+            FocusItem::Source,
+        )
+    }
+
+    /// Open the directory-creation variant of the clone dialog: a
+    /// destination field only, no source and no Git child.
+    pub(crate) fn open_new_dir(
+        parent: Option<String>,
+        probe: impl CloneDestProbe + 'static,
+    ) -> Self {
+        Self::open(
+            Op::Clone {
+                form: CloneForm::new(parent, CloneKind::Directory),
+                probe: Box::new(probe),
+            },
+            FocusItem::Dest,
+        )
     }
 
     pub(crate) fn open_delete(path: String) -> Self {
-        let mut dialog = Self {
-            op: Op::Delete {
+        Self::open(
+            Op::Delete {
                 form: DeleteForm::new(path),
             },
+            FocusItem::Action,
+        )
+    }
+
+    /// Shared initial state for every dialog; only the operation and
+    /// the initially focused item differ.
+    fn open(op: Op, focus: FocusItem) -> Self {
+        let mut dialog = Self {
+            op,
             focus: 0,
             selected_stage: 0,
             inspect: None,
@@ -168,7 +167,7 @@ impl ActionDialog {
             awaiting_mutate: false,
             mutation_path: None,
         };
-        dialog.focus_item(FocusItem::Action);
+        dialog.focus_item(focus);
         dialog
     }
 
@@ -235,7 +234,29 @@ impl ActionDialog {
     }
 
     pub(crate) fn is_clone(&self) -> bool {
-        matches!(self.op, Op::Clone { .. })
+        matches!(
+            self.op,
+            Op::Clone {
+                form: CloneForm {
+                    kind: CloneKind::Repository,
+                    ..
+                },
+                ..
+            }
+        )
+    }
+
+    pub(crate) fn is_new_dir(&self) -> bool {
+        matches!(
+            self.op,
+            Op::Clone {
+                form: CloneForm {
+                    kind: CloneKind::Directory,
+                    ..
+                },
+                ..
+            }
+        )
     }
 
     pub(crate) fn interrupt_child(&mut self) {
@@ -313,16 +334,32 @@ impl ActionDialog {
     }
 
     pub(crate) fn stage_n(&self) -> usize {
-        match self.op {
-            Op::Clone { .. } => 4,
+        match &self.op {
+            Op::Clone { form, .. } => form.stage_n(),
             Op::Delete { .. } => 5,
         }
     }
 
     pub(crate) fn current_stage(&self) -> usize {
         match &self.op {
-            Op::Clone { form, .. } => form.stage.index(),
+            Op::Clone { form, .. } => form.stage_index(),
             Op::Delete { form } => form.stage.index(),
+        }
+    }
+
+    /// Result-stage summary shared by clone and directory modes.
+    fn result_summary(&self) -> String {
+        match &self.outcome {
+            Some(DialogOutcome::Failed { .. }) => "error".into(),
+            Some(DialogOutcome::Completed {
+                config_error: Some(_),
+                ..
+            })
+            | Some(DialogOutcome::Completed {
+                refresh_error: Some(_),
+                ..
+            }) => "error".into(),
+            _ => String::new(),
         }
     }
 
@@ -332,62 +369,73 @@ impl ActionDialog {
             return "waiting".into();
         }
         match &self.op {
-            Op::Clone { form, .. } => match i {
-                0 => {
-                    if form.source.text().is_empty()
-                        && form.dest.text().is_empty()
-                    {
-                        "empty".into()
-                    } else {
-                        let dest = self
-                            .abs_dest()
-                            .map(|a| a.to_string())
-                            .unwrap_or_else(|_| form.dest.text().to_string());
-                        format!(
-                            "{} → {}",
-                            trunc_summary(form.source.text(), 18),
-                            dest
-                        )
-                    }
-                }
-                1 => {
-                    if i == cur {
-                        match form.auth {
-                            CloneAuth::HostKey => "host key (native)".into(),
-                            CloneAuth::Passphrase => {
-                                "passphrase (native)".into()
-                            }
-                            CloneAuth::Username => "username (native)".into(),
-                            CloneAuth::None => "waiting for git".into(),
+            Op::Clone { form, .. } => match form.kind {
+                CloneKind::Directory => match i {
+                    0 => {
+                        if form.dest.text().is_empty() {
+                            "empty".into()
+                        } else {
+                            self.abs_dest()
+                                .map(|a| a.to_string())
+                                .unwrap_or_else(|_| {
+                                    form.dest.text().to_string()
+                                })
                         }
-                    } else {
-                        "host key accepted".into()
                     }
-                }
-                2 => {
-                    if i == cur {
-                        match self.cancel {
-                            CancelState::Grace => "cancelling…".into(),
-                            CancelState::ForceReady => {
-                                "force stop available".into()
-                            }
-                            CancelState::Idle => "cloning".into(),
+                    _ => self.result_summary(),
+                },
+                CloneKind::Repository => match i {
+                    0 => {
+                        if form.source.text().is_empty()
+                            && form.dest.text().is_empty()
+                        {
+                            "empty".into()
+                        } else {
+                            let dest = self
+                                .abs_dest()
+                                .map(|a| a.to_string())
+                                .unwrap_or_else(|_| {
+                                    form.dest.text().to_string()
+                                });
+                            format!(
+                                "{} → {}",
+                                trunc_summary(form.source.text(), 18),
+                                dest
+                            )
                         }
-                    } else {
-                        "clone finished".into()
                     }
-                }
-                _ => match &self.outcome {
-                    Some(DialogOutcome::Failed { .. }) => "error".into(),
-                    Some(DialogOutcome::Completed {
-                        config_error: Some(_),
-                        ..
-                    })
-                    | Some(DialogOutcome::Completed {
-                        refresh_error: Some(_),
-                        ..
-                    }) => "error".into(),
-                    _ => String::new(),
+                    1 => {
+                        if i == cur {
+                            match form.auth {
+                                CloneAuth::HostKey => {
+                                    "host key (native)".into()
+                                }
+                                CloneAuth::Passphrase => {
+                                    "passphrase (native)".into()
+                                }
+                                CloneAuth::Username => {
+                                    "username (native)".into()
+                                }
+                                CloneAuth::None => "waiting for git".into(),
+                            }
+                        } else {
+                            "host key accepted".into()
+                        }
+                    }
+                    2 => {
+                        if i == cur {
+                            match self.cancel {
+                                CancelState::Grace => "cancelling…".into(),
+                                CancelState::ForceReady => {
+                                    "force stop available".into()
+                                }
+                                CancelState::Idle => "cloning".into(),
+                            }
+                        } else {
+                            "clone finished".into()
+                        }
+                    }
+                    _ => self.result_summary(),
                 },
             },
             Op::Delete { form } => match i {
@@ -443,11 +491,17 @@ impl ActionDialog {
 
     pub(crate) fn stage_title(&self, i: usize) -> &'static str {
         match &self.op {
-            Op::Clone { .. } => match i {
-                0 => CloneStage::SourceDest.title(),
-                1 => CloneStage::Authenticate.title(),
-                2 => CloneStage::Clone.title(),
-                _ => CloneStage::Result.title(),
+            Op::Clone { form, .. } => match form.kind {
+                CloneKind::Directory => match i {
+                    0 => "Destination",
+                    _ => "Result",
+                },
+                CloneKind::Repository => match i {
+                    0 => CloneStage::SourceDest.title(),
+                    1 => CloneStage::Authenticate.title(),
+                    2 => CloneStage::Clone.title(),
+                    _ => CloneStage::Result.title(),
+                },
             },
             Op::Delete { .. } => match i {
                 0 => DeleteStage::Target.title(),
@@ -555,7 +609,12 @@ impl ActionDialog {
         match &self.op {
             Op::Clone { form, .. } => match form.stage {
                 CloneStage::SourceDest => {
-                    let mut v = vec![FocusItem::Source, FocusItem::Dest];
+                    let mut v = match form.kind {
+                        CloneKind::Repository => {
+                            vec![FocusItem::Source, FocusItem::Dest]
+                        }
+                        CloneKind::Directory => vec![FocusItem::Dest],
+                    };
                     if self.show_add_parent() {
                         v.push(FocusItem::AddParent);
                     }
@@ -617,7 +676,9 @@ impl ActionDialog {
         let Op::Clone { form, probe } = &self.op else {
             return None;
         };
-        if form.source.text().trim().is_empty() {
+        if form.kind == CloneKind::Repository
+            && form.source.text().trim().is_empty()
+        {
             return Some("source is required".into());
         }
         if form.dest.text().trim().is_empty() {
@@ -990,6 +1051,50 @@ impl ActionDialog {
         }
     }
 
+    /// Create the destination directory synchronously. Directory
+    /// mode has no Git child, so there is no Authenticate/Clone
+    /// stage: the dialog jumps straight to the result. Nested
+    /// destinations are allowed, so `a/b` creates both.
+    fn begin_create_dir(&mut self) {
+        let add_parent =
+            matches!(&self.op, Op::Clone { form, .. } if form.add_parent);
+        let Ok(dest) = self.abs_dest() else {
+            return;
+        };
+        let exists = match &self.op {
+            Op::Clone { probe, .. } => probe.exists(&dest),
+            Op::Delete { .. } => false,
+        };
+        if exists {
+            self.present_error(format!("destination already exists: `{dest}`"));
+            return;
+        }
+        if let Err(e) = std::fs::create_dir_all(&dest) {
+            self.present_error(format!("could not create `{dest}`: {e}"));
+            return;
+        }
+        self.refresh_requested = true;
+        self.mutation_path = Some(dest.clone());
+        if add_parent && let Some(worker) = &mut self.config_append {
+            self.awaiting_config = true;
+            if let Op::Clone { form, .. } = &mut self.op {
+                form.stage = CloneStage::Result;
+            }
+            worker.begin(dest, self.generation);
+            return;
+        }
+        self.present_completed(self.completion_summary(&dest), None, None);
+    }
+
+    /// Result wording shared by the clone and directory modes.
+    fn completion_summary(&self, dest: &str) -> String {
+        if self.is_new_dir() {
+            format!("created `{dest}`")
+        } else {
+            format!("cloned to `{dest}`")
+        }
+    }
+
     fn on_clone_output(&mut self, bytes: &[u8]) {
         if self.clone_job.is_none() {
             return;
@@ -1088,11 +1193,8 @@ impl ActionDialog {
         let dest = event.dest;
         self.clone_job = None;
         let config_error = event.result.err();
-        self.present_completed(
-            format!("cloned to `{dest}`"),
-            config_error,
-            None,
-        );
+        let summary = self.completion_summary(&dest);
+        self.present_completed(summary, config_error, None);
         if self.sticky() {
             None
         } else {
@@ -1690,7 +1792,10 @@ impl ActionDialog {
                     if self.clone_validation_error().is_some() {
                         return None;
                     }
-                    self.begin_clone();
+                    match form.kind {
+                        CloneKind::Repository => self.begin_clone(),
+                        CloneKind::Directory => self.begin_create_dir(),
+                    }
                 }
             }
             Op::Delete { form } => {
@@ -1754,9 +1859,15 @@ impl ActionDialog {
                 CloneStage::SourceDest
                     if self.clone_validation_error().is_some() =>
                 {
-                    "Clone (invalid)".into()
+                    match form.kind {
+                        CloneKind::Repository => "Clone (invalid)".into(),
+                        CloneKind::Directory => "Create (invalid)".into(),
+                    }
                 }
-                _ => "Clone".into(),
+                _ => match form.kind {
+                    CloneKind::Repository => "Clone".into(),
+                    CloneKind::Directory => "Create".into(),
+                },
             },
             Op::Delete { form } => match form.stage {
                 DeleteStage::Target => "Preflight".into(),

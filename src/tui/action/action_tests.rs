@@ -1,8 +1,10 @@
+use super::clone_flow::{ConfigAppendEvent, FakeConfigAppend};
 use super::pty::{FakePty, PtyEvent, PtySize, PtyTransport};
 use super::{
     ActionDialog, CancelState, CloneDestProbe, CloneStage, DeleteStage,
     DialogOutcome, FocusItem, GRACE_FOR,
 };
+use crate::utils::test_utils::TempDir;
 use ratatui::crossterm::event::{
     KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
 };
@@ -34,6 +36,15 @@ fn type_text(dialog: &mut ActionDialog, s: &str) {
     for c in s.chars() {
         dialog.handle_key(key(KeyCode::Char(c)));
     }
+}
+
+/// Remove the prefilled clone source, leaving an empty field.
+fn clear_source(dialog: &mut ActionDialog) {
+    let n = dialog.source().chars().count();
+    for _ in 0..n {
+        dialog.handle_key(key(KeyCode::Backspace));
+    }
+    assert_eq!(dialog.source(), "");
 }
 
 struct Probe {
@@ -82,6 +93,7 @@ fn clone_dialog(
 
 fn fill_valid_clone(dialog: &mut ActionDialog) {
     assert_eq!(dialog.item(), Some(FocusItem::Source));
+    clear_source(dialog);
     type_text(dialog, "git@example.com:acme/repo.git");
     assert_eq!(dialog.dest(), "repo");
 }
@@ -89,6 +101,7 @@ fn fill_valid_clone(dialog: &mut ActionDialog) {
 #[test]
 fn field_insert_backspace_delete_and_cursor() {
     let mut dialog = clone_dialog(Some("/work"), &[], &[]);
+    clear_source(&mut dialog);
     type_text(&mut dialog, "ab");
     assert_eq!(dialog.source(), "ab");
     assert_eq!(dialog.cursor(), 2);
@@ -202,6 +215,7 @@ fn add_parent_only_when_uncovered_and_toggles() {
 #[test]
 fn empty_source_or_dest_blocks_clone() {
     let mut dialog = clone_dialog(Some("/work"), &[], &[]);
+    clear_source(&mut dialog);
     assert_eq!(
         dialog.clone_validation_error().as_deref(),
         Some("source is required")
@@ -240,6 +254,7 @@ fn relative_dest_without_parent_blocks_clone() {
 #[test]
 fn clone_dest_prefills_repo_name_when_parent_is_set() {
     let mut dialog = clone_dialog(Some("/work"), &[], &[]);
+    clear_source(&mut dialog);
     type_text(&mut dialog, "https://github.com/acme/repo.git");
     assert_eq!(dialog.dest(), "repo");
 }
@@ -247,14 +262,17 @@ fn clone_dest_prefills_repo_name_when_parent_is_set() {
 #[test]
 fn clone_dest_prefills_from_git_dir_and_padded_sources() {
     let mut git_dir = clone_dialog(Some("/work"), &[], &[]);
+    clear_source(&mut git_dir);
     type_text(&mut git_dir, "/tmp/x/repo/.git");
     assert_eq!(git_dir.dest(), "repo");
 
     let mut padded = clone_dialog(Some("/work"), &[], &[]);
+    clear_source(&mut padded);
     type_text(&mut padded, "https://github.com/acme/repo.git ");
     assert_eq!(padded.dest(), "repo");
 
     let mut host_only = clone_dialog(Some("/work"), &[], &[]);
+    clear_source(&mut host_only);
     type_text(&mut host_only, "git@host:");
     assert_eq!(host_only.dest(), "host");
 }
@@ -262,6 +280,7 @@ fn clone_dest_prefills_from_git_dir_and_padded_sources() {
 #[test]
 fn clone_dest_prefills_tilde_repo_when_parent_is_none() {
     let mut dialog = clone_dialog(None, &[], &[]);
+    clear_source(&mut dialog);
     type_text(&mut dialog, "https://github.com/acme/repo.git");
     assert_eq!(dialog.dest(), "~/repo");
 }
@@ -269,6 +288,7 @@ fn clone_dest_prefills_tilde_repo_when_parent_is_none() {
 #[test]
 fn clone_dest_tracks_source_until_manually_edited() {
     let mut dialog = clone_dialog(Some("/work"), &[], &[]);
+    clear_source(&mut dialog);
     type_text(&mut dialog, "https://github.com/acme/one");
     assert_eq!(dialog.dest(), "one");
     dialog.handle_key(key(KeyCode::Tab));
@@ -518,10 +538,11 @@ fn dialog_outcome_distinguishes_cancelled_failed_completed_and_ancillary() {
 #[test]
 fn key_release_is_ignored() {
     let mut dialog = clone_dialog(Some("/work"), &[], &[]);
+    let before = dialog.source().to_string();
     let mut release = key(KeyCode::Char('a'));
     release.kind = KeyEventKind::Release;
     dialog.handle_key(release);
-    assert_eq!(dialog.source(), "");
+    assert_eq!(dialog.source(), before);
 }
 
 #[test]
@@ -609,4 +630,120 @@ fn stale_exit_after_generation_bump_is_ignored() {
     assert_eq!(dialog.pump(), None);
     assert_eq!(dialog.outcome(), None);
     assert_eq!(dialog.cancel_state(), CancelState::Idle);
+}
+
+fn new_dir_dialog(
+    parent: Option<&str>,
+    existing: &[&str],
+    covered: &[&str],
+) -> ActionDialog {
+    ActionDialog::open_new_dir(
+        parent.map(str::to_string),
+        Probe::new(existing, covered),
+    )
+}
+
+#[test]
+fn new_dir_has_two_stages_and_dest_only() {
+    let dialog = new_dir_dialog(Some("/work"), &[], &[]);
+    assert!(dialog.is_new_dir());
+    assert!(!dialog.is_clone());
+    assert_eq!(dialog.stage_n(), 2);
+    assert_eq!(dialog.current_stage(), 0);
+    assert_eq!(dialog.stage_title(0), "Destination");
+    assert_eq!(dialog.stage_title(1), "Result");
+    assert_eq!(
+        dialog.items(),
+        vec![FocusItem::Dest, FocusItem::Cancel, FocusItem::Action]
+    );
+    assert_eq!(dialog.item(), Some(FocusItem::Dest));
+    assert_eq!(dialog.action_label(), "Create (invalid)");
+}
+
+#[test]
+fn new_dir_validation_requires_dest_and_rejects_existing() {
+    let mut dialog = new_dir_dialog(Some("/work"), &[], &[]);
+    assert_eq!(
+        dialog.clone_validation_error().as_deref(),
+        Some("destination is required")
+    );
+    type_text(&mut dialog, "alpha");
+    assert!(dialog.clone_validation_error().is_none());
+    assert_eq!(dialog.action_label(), "Create");
+
+    let existing = new_dir_dialog(Some("/work"), &["/work/alpha"], &[]);
+    assert!(existing.clone_validation_error().is_some());
+}
+
+#[test]
+fn new_dir_enter_creates_nested_directory_and_requests_refresh() {
+    let temp = TempDir::new();
+    let parent = temp.path().to_str().unwrap().to_string();
+    let mut dialog = new_dir_dialog(Some(&parent), &[], &[]);
+    type_text(&mut dialog, "alpha/beta");
+    dialog.handle_key(key(KeyCode::Enter));
+    let created = temp.path().join("alpha/beta");
+    assert!(created.is_dir(), "directory was not created");
+    assert!(dialog.refresh_requested());
+    assert_eq!(dialog.mutation_path(), Some(created.to_str().unwrap()));
+    assert_eq!(dialog.current_stage(), 1);
+    assert!(!dialog.running());
+    match dialog.outcome() {
+        Some(DialogOutcome::Completed {
+            summary,
+            config_error: None,
+            refresh_error: None,
+        }) => assert!(summary.starts_with("created `")),
+        other => panic!("expected completed, got {other:?}"),
+    }
+}
+
+#[test]
+fn new_dir_existing_dest_is_not_created() {
+    let temp = TempDir::new();
+    let existing = temp.child("alpha");
+    let parent = temp.path().to_str().unwrap().to_string();
+    let existing = existing.to_str().unwrap().to_string();
+    let mut dialog = new_dir_dialog(Some(&parent), &[&existing], &[]);
+    type_text(&mut dialog, "alpha");
+    dialog.handle_key(key(KeyCode::Enter));
+    assert!(!dialog.refresh_requested());
+    assert_eq!(dialog.current_stage(), 0);
+    assert!(
+        dialog
+            .clone_validation_error()
+            .is_some_and(|e| e.contains("already exists")),
+        "inline validation blocks without an outcome"
+    );
+}
+
+#[test]
+fn new_dir_add_parent_records_config_append() {
+    let temp = TempDir::new();
+    let parent = temp.path().to_str().unwrap().to_string();
+    let mut dialog = new_dir_dialog(Some(&parent), &[], &[]);
+    let cfg = FakeConfigAppend::new();
+    dialog.set_config_append(Box::new(cfg.clone()));
+    type_text(&mut dialog, "alpha");
+    dialog.handle_key(key(KeyCode::Tab));
+    assert_eq!(dialog.item(), Some(FocusItem::AddParent));
+    dialog.handle_key(key(KeyCode::Char(' ')));
+    assert!(dialog.add_parent());
+    dialog.handle_key(key(KeyCode::Tab));
+    dialog.handle_key(key(KeyCode::Tab));
+    assert_eq!(dialog.item(), Some(FocusItem::Action));
+    dialog.handle_key(key(KeyCode::Enter));
+    let begins = cfg.begins();
+    assert_eq!(begins.len(), 1);
+    assert!(begins[0].0.ends_with("/alpha"));
+    assert_eq!(dialog.current_stage(), 1);
+    cfg.inject(ConfigAppendEvent {
+        generation: begins[0].1,
+        dest: begins[0].0.clone(),
+        result: Ok(()),
+    });
+    assert!(matches!(
+        dialog.pump(),
+        Some(DialogOutcome::Completed { .. })
+    ));
 }

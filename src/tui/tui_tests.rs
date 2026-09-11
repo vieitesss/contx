@@ -443,6 +443,7 @@ fn prefix_selected_delete_highlights_only_delete_badge() {
     tui.handle_key(key(KeyCode::Enter));
     tui.handle_key(ctrl('x'));
     tui.handle_key(key(KeyCode::Char('j')));
+    tui.handle_key(key(KeyCode::Char('j')));
     let buf = paint(&mut tui, 80, 24);
     let row = row_text(&buf, 23, 80);
     let t = Theme::LIGHT;
@@ -819,5 +820,57 @@ fn delete_standalone_with_remote_spawns_fetch_pty() {
     assert!(
         tui.delete_findings().is_empty(),
         "fetch PTY should run before findings"
+    );
+}
+
+#[test]
+fn new_dir_action_opens_destination_only_dialog() {
+    let mut tui = two();
+    tui.handle_key(ctrl('x'));
+    tui.handle_key(key(KeyCode::Char('n')));
+    assert!(tui.dialog_open());
+    assert!(tui.dialog.as_ref().unwrap().is_new_dir());
+    let text = buf_text(&paint(&mut tui, 80, 24));
+    assert!(text.contains("New directory"), "{text}");
+    assert!(text.contains("Destination"), "{text}");
+    assert!(!text.contains("Source"), "{text}");
+}
+
+#[test]
+fn new_dir_creates_directory_and_reports_created() {
+    let d = TempDir::new();
+    let group = d.child("group");
+    let existing = group.join("existing");
+    fs::create_dir_all(&existing).unwrap();
+    let mut tui = tui_for_repo(&existing);
+    tui.hold_refresh_for_test(true);
+    tui.handle_key(ctrl('x'));
+    tui.handle_key(key(KeyCode::Char('n')));
+    for c in "alpha".chars() {
+        tui.handle_key(key(KeyCode::Char(c)));
+    }
+    tui.handle_key(key(KeyCode::Enter));
+    let created = group.join("alpha");
+    assert!(created.is_dir(), "directory was not created");
+    let generation = tui.dialog.as_ref().unwrap().generation();
+    assert!(tui.refresh_in_flight);
+    tui.refresh_tx
+        .send(RefreshEvent {
+            generation,
+            kind: RefreshKind::Create {
+                dest: created.display().to_string(),
+                config_error: None,
+            },
+            result: Ok(vec![SessionCandidate::new(
+                created.display().to_string(),
+                group.display().to_string(),
+            )]),
+        })
+        .unwrap();
+    tui.pump(Instant::now());
+    assert!(!tui.dialog_open(), "refresh completes the dialog");
+    assert_eq!(
+        tui.toast_message(),
+        Some(format!("created `{}`", created.display()).as_str())
     );
 }

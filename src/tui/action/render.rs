@@ -11,7 +11,7 @@ use ratatui::{
 use crate::theme::Theme;
 
 use super::prompt::mask_secret;
-use super::state::{CloneAuth, DeleteConfirm, DeleteStage};
+use super::state::{CloneAuth, CloneKind, DeleteConfirm, DeleteStage};
 use super::{ActionDialog, CancelState, DialogOutcome, FocusItem, Op};
 
 const T: Theme = Theme::LIGHT;
@@ -89,7 +89,10 @@ pub(crate) fn render_dialog(
     buf: &mut Buffer,
 ) {
     let rect = modal_rect(area);
-    let title = match dialog.op {
+    let title = match &dialog.op {
+        Op::Clone { form, .. } if form.kind == CloneKind::Directory => {
+            " New directory "
+        }
         Op::Clone { .. } => " Clone ",
         Op::Delete { .. } => " Delete ",
     };
@@ -420,11 +423,17 @@ fn stage_body(
     width: usize,
 ) -> Vec<Line<'static>> {
     match &dialog.op {
-        Op::Clone { .. } => match i {
-            0 => form_lines(dialog, width, dialog.git_started()),
-            1 => auth_lines(dialog, width),
-            2 => run_lines(dialog, width, "Clone"),
-            _ => error_or_result_lines(dialog, width),
+        Op::Clone { form, .. } => match form.kind {
+            CloneKind::Directory => match i {
+                0 => form_lines(dialog, width, dialog.git_started()),
+                _ => error_or_result_lines(dialog, width),
+            },
+            CloneKind::Repository => match i {
+                0 => form_lines(dialog, width, dialog.git_started()),
+                1 => auth_lines(dialog, width),
+                2 => run_lines(dialog, width, "Clone"),
+                _ => error_or_result_lines(dialog, width),
+            },
         },
         Op::Delete { form } => match i {
             0 => target_lines(dialog, width, dialog.git_started()),
@@ -456,7 +465,9 @@ fn form_lines(
     let Op::Clone { form, .. } = &dialog.op else {
         return vec![];
     };
-    let src_focus = !locked && dialog.item() == Some(FocusItem::Source);
+    let directory = form.kind == CloneKind::Directory;
+    let src_focus =
+        !directory && !locked && dialog.item() == Some(FocusItem::Source);
     let dst_focus = !locked && dialog.item() == Some(FocusItem::Dest);
     let lock = if locked { "  (locked)" } else { "" };
     let dest_label = match &form.parent {
@@ -465,21 +476,22 @@ fn form_lines(
         }
         None => format!("Destination (absolute or ~){lock}"),
     };
-    let mut lines = vec![
-        label_line(&format!("Source{lock}"), width, T.operator),
-        fill(
+    let mut lines = Vec::new();
+    if !directory {
+        lines.push(label_line(&format!("Source{lock}"), width, T.operator));
+        lines.push(fill(
             field_spans(form.source.text(), dialog.cursor(), src_focus, false),
             width,
             T.bg,
-        ),
-        blank(width),
-        label_line(&dest_label, width, T.operator),
-        fill(
-            field_spans(form.dest.text(), dialog.cursor(), dst_focus, false),
-            width,
-            T.bg,
-        ),
-    ];
+        ));
+        lines.push(blank(width));
+    }
+    lines.push(label_line(&dest_label, width, T.operator));
+    lines.push(fill(
+        field_spans(form.dest.text(), dialog.cursor(), dst_focus, false),
+        width,
+        T.bg,
+    ));
     if let Ok(abs) = dialog.abs_dest() {
         lines.push(fill(
             vec![

@@ -597,10 +597,33 @@ fn action_menu_arrows_and_enter_select() {
     assert_eq!(picker.menu().unwrap().selected, Some(0));
     assert_eq!(picker.handle_key(key(KeyCode::Down)), Intent::None);
     assert_eq!(picker.menu().unwrap().selected, Some(1));
+    assert_eq!(picker.handle_key(key(KeyCode::Down)), Intent::None);
+    assert_eq!(picker.menu().unwrap().selected, Some(2));
     assert_eq!(
         picker.handle_key(key(KeyCode::Enter)),
         Intent::Delete("/g1/a1".into())
     );
+}
+
+#[test]
+fn action_menu_n_key_opens_new_directory() {
+    let mut picker = two_groups();
+    picker.handle_key(ctrl(KeyCode::Char('x')));
+    assert_eq!(picker.handle_key(key(KeyCode::Char('n'))), Intent::NewDir);
+    assert!(picker.menu().is_none());
+}
+
+#[test]
+fn action_menu_enter_on_new_directory_returns_intent() {
+    let mut picker = two_groups();
+    picker.handle_key(ctrl(KeyCode::Char('x')));
+    assert_eq!(picker.handle_key(key(KeyCode::Up)), Intent::None);
+    assert_eq!(picker.menu().unwrap().selected, Some(0));
+    assert_eq!(picker.handle_key(key(KeyCode::Enter)), Intent::Clone);
+    picker.handle_key(ctrl(KeyCode::Char('x')));
+    assert_eq!(picker.handle_key(key(KeyCode::Down)), Intent::None);
+    assert_eq!(picker.menu().unwrap().selected, Some(1));
+    assert_eq!(picker.handle_key(key(KeyCode::Enter)), Intent::NewDir);
 }
 
 #[test]
@@ -611,6 +634,10 @@ fn action_menu_k_and_j_navigate_like_up_and_down() {
     assert_eq!(picker.handle_key(key(KeyCode::Char('k'))), Intent::None);
     assert_eq!(picker.menu().unwrap().selected, Some(0));
     assert_eq!(picker.handle_key(key(KeyCode::Char('j'))), Intent::None);
+    assert_eq!(picker.menu().unwrap().selected, Some(1));
+    assert_eq!(picker.handle_key(key(KeyCode::Char('j'))), Intent::None);
+    assert_eq!(picker.menu().unwrap().selected, Some(2));
+    assert_eq!(picker.handle_key(key(KeyCode::Char('k'))), Intent::None);
     assert_eq!(picker.menu().unwrap().selected, Some(1));
     assert_eq!(picker.handle_key(key(KeyCode::Char('k'))), Intent::None);
     assert_eq!(picker.menu().unwrap().selected, Some(0));
@@ -626,15 +653,15 @@ fn action_menu_enter_without_navigation_clones() {
 }
 
 #[test]
-fn action_menu_down_without_delete_keeps_selection_unchanged() {
+fn action_menu_down_without_delete_stops_at_new_directory() {
     let mut picker = two_groups();
     picker.handle_key(ctrl(KeyCode::Char('x')));
     assert!(!picker.menu().unwrap().delete_enabled);
     assert_eq!(picker.handle_key(key(KeyCode::Down)), Intent::None);
-    assert_eq!(picker.menu().unwrap().selected, None);
+    assert_eq!(picker.menu().unwrap().selected, Some(1));
     assert_eq!(picker.handle_key(key(KeyCode::Char('j'))), Intent::None);
-    assert_eq!(picker.menu().unwrap().selected, None);
-    assert_eq!(picker.handle_key(key(KeyCode::Enter)), Intent::Clone);
+    assert_eq!(picker.menu().unwrap().selected, Some(1));
+    assert_eq!(picker.handle_key(key(KeyCode::Enter)), Intent::NewDir);
 }
 
 #[test]

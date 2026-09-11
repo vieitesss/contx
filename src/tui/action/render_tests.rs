@@ -133,7 +133,7 @@ fn completed_stage_collapses_to_summary() {
     dialog.handle_key(key(KeyCode::Enter));
     let buf = paint(&dialog, 80, 24);
     let text = buf_text(&buf);
-    assert!(text.contains("git@x:y.git → /work/y"), "{text}");
+    assert!(text.contains("→ /work/git@x:y"), "{text}");
     assert!(text.contains("Cancel git"), "{text}");
 }
 

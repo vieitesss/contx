@@ -243,6 +243,10 @@ pub(crate) enum RefreshKind {
         dest: String,
         config_error: Option<String>,
     },
+    Create {
+        dest: String,
+        config_error: Option<String>,
+    },
     Delete {
         path: String,
     },
