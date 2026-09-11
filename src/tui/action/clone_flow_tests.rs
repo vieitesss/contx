@@ -50,8 +50,7 @@ fn dialog() -> ActionDialog {
 
 fn fill_valid(dialog: &mut ActionDialog) {
     type_text(dialog, "git@example.com:acme/repo.git");
-    dialog.handle_key(key(KeyCode::Tab));
-    type_text(dialog, "repo");
+    assert_eq!(dialog.dest(), "repo");
 }
 
 fn start_with_fake() -> (ActionDialog, FakePty) {
@@ -186,6 +185,7 @@ fn git_success_config_failure_is_partial_sticky_and_still_refreshes() {
     d.set_transport(Box::new(fake.clone()));
     d.set_config_append(Box::new(cfg.clone()));
     fill_valid(&mut d);
+    d.handle_key(key(KeyCode::Tab));
     d.handle_key(key(KeyCode::Tab));
     assert_eq!(d.item(), Some(FocusItem::AddParent));
     d.handle_key(key(KeyCode::Enter));

@@ -65,6 +65,11 @@ impl Field {
         self.cursor = self.text.chars().count();
     }
 
+    pub(crate) fn set_str(&mut self, s: &str) {
+        self.text = s.to_string();
+        self.cursor = self.text.chars().count();
+    }
+
     fn clamp(&mut self) {
         let len = self.text.chars().count();
         if self.cursor > len {

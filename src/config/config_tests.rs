@@ -688,7 +688,7 @@ fn help_flags_are_not_errors() {
 
 #[test]
 fn usage_documents_clone_and_delete() {
-    assert!(super::USAGE.contains("clone <source> <destination>"));
+    assert!(super::USAGE.contains("clone <source> [destination]"));
     assert!(
         super::USAGE
             .contains("delete [--dry-run] [--permanent] [--force] <path>")
@@ -706,11 +706,38 @@ fn picker_is_the_default_command() {
 }
 
 #[test]
-fn clone_requires_source_and_destination() {
+fn clone_requires_source() {
     let res = resolve_startup(&["clone"], &[]);
     assert!(matches!(res, Err(ConfigError::ArgNotFound)));
-    let res = resolve_startup(&["clone", "src"], &[]);
-    assert!(matches!(res, Err(ConfigError::ArgNotFound)));
+}
+
+#[test]
+fn clone_omitted_destination_uses_derived_name() {
+    let d = TempDir::new();
+    let cases = [
+        ("git@host:acme/repo.git", "repo"),
+        ("/tmp/x/repo/.git", "repo"),
+        ("  https://host/acme/repo.git\t", "repo"),
+        ("git@host:acme/.git", "acme"),
+    ];
+    for (source, dest) in cases {
+        let resolved =
+            resolve_ready(&["clone", source], &home_env(d.path())).unwrap();
+        assert_eq!(
+            resolved.command,
+            Command::Clone {
+                source: source.to_string(),
+                destination: dest.to_string(),
+            },
+            "source {source:?}"
+        );
+    }
+}
+
+#[test]
+fn clone_undervable_source_without_destination_is_invalid() {
+    let res = resolve_startup(&["clone", ".."], &[]);
+    assert!(matches!(res, Err(ConfigError::ArgIsNotValid(_))));
 }
 
 #[test]

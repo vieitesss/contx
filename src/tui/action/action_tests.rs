@@ -83,9 +83,7 @@ fn clone_dialog(
 fn fill_valid_clone(dialog: &mut ActionDialog) {
     assert_eq!(dialog.item(), Some(FocusItem::Source));
     type_text(dialog, "git@example.com:acme/repo.git");
-    dialog.handle_key(key(KeyCode::Tab));
-    assert_eq!(dialog.item(), Some(FocusItem::Dest));
-    type_text(dialog, "repo");
+    assert_eq!(dialog.dest(), "repo");
 }
 
 #[test]
@@ -192,6 +190,7 @@ fn add_parent_only_when_uncovered_and_toggles() {
         open.items()
     );
     open.handle_key(key(KeyCode::Tab));
+    open.handle_key(key(KeyCode::Tab));
     assert_eq!(open.item(), Some(FocusItem::AddParent));
     assert!(!open.add_parent());
     open.handle_key(key(KeyCode::Char(' ')));
@@ -207,7 +206,7 @@ fn empty_source_or_dest_blocks_clone() {
         dialog.clone_validation_error().as_deref(),
         Some("source is required")
     );
-    type_text(&mut dialog, "src.git");
+    type_text(&mut dialog, "..");
     assert_eq!(
         dialog.clone_validation_error().as_deref(),
         Some("destination is required")
@@ -222,6 +221,12 @@ fn relative_dest_without_parent_blocks_clone() {
     let mut dialog = clone_dialog(None, &[], &[]);
     type_text(&mut dialog, "src.git");
     dialog.handle_key(key(KeyCode::Tab));
+    assert_eq!(dialog.item(), Some(FocusItem::Dest));
+    assert_eq!(dialog.dest(), "~/src");
+    let n = dialog.dest().chars().count();
+    for _ in 0..n {
+        dialog.handle_key(key(KeyCode::Backspace));
+    }
     type_text(&mut dialog, "repo");
     let err = dialog.clone_validation_error().expect("relative rejected");
     assert!(
@@ -230,6 +235,113 @@ fn relative_dest_without_parent_blocks_clone() {
     );
     dialog.handle_key(key(KeyCode::Enter));
     assert!(!dialog.git_started());
+}
+
+#[test]
+fn clone_dest_prefills_repo_name_when_parent_is_set() {
+    let mut dialog = clone_dialog(Some("/work"), &[], &[]);
+    type_text(&mut dialog, "https://github.com/acme/repo.git");
+    assert_eq!(dialog.dest(), "repo");
+}
+
+#[test]
+fn clone_dest_prefills_from_git_dir_and_padded_sources() {
+    let mut git_dir = clone_dialog(Some("/work"), &[], &[]);
+    type_text(&mut git_dir, "/tmp/x/repo/.git");
+    assert_eq!(git_dir.dest(), "repo");
+
+    let mut padded = clone_dialog(Some("/work"), &[], &[]);
+    type_text(&mut padded, "https://github.com/acme/repo.git ");
+    assert_eq!(padded.dest(), "repo");
+
+    let mut host_only = clone_dialog(Some("/work"), &[], &[]);
+    type_text(&mut host_only, "git@host:");
+    assert_eq!(host_only.dest(), "host");
+}
+
+#[test]
+fn clone_dest_prefills_tilde_repo_when_parent_is_none() {
+    let mut dialog = clone_dialog(None, &[], &[]);
+    type_text(&mut dialog, "https://github.com/acme/repo.git");
+    assert_eq!(dialog.dest(), "~/repo");
+}
+
+#[test]
+fn clone_dest_tracks_source_until_manually_edited() {
+    let mut dialog = clone_dialog(Some("/work"), &[], &[]);
+    type_text(&mut dialog, "https://github.com/acme/one");
+    assert_eq!(dialog.dest(), "one");
+    dialog.handle_key(key(KeyCode::Tab));
+    assert_eq!(dialog.item(), Some(FocusItem::Dest));
+    dialog.handle_key(key(KeyCode::Left));
+    dialog.handle_key(key(KeyCode::Right));
+    dialog.handle_key(shift_tab());
+    assert_eq!(dialog.item(), Some(FocusItem::Source));
+    for _ in 0..3 {
+        dialog.handle_key(key(KeyCode::Backspace));
+    }
+    type_text(&mut dialog, "two");
+    assert_eq!(dialog.source(), "https://github.com/acme/two");
+    assert_eq!(dialog.dest(), "two");
+}
+
+#[test]
+fn clone_dest_stops_tracking_after_dest_insert_backspace_or_delete() {
+    let mut insert = clone_dialog(Some("/work"), &[], &[]);
+    type_text(&mut insert, "git@h:acme/repo.git");
+    assert_eq!(insert.dest(), "repo");
+    insert.handle_key(key(KeyCode::Tab));
+    insert.handle_key(key(KeyCode::Char('x')));
+    assert_eq!(insert.dest(), "repox");
+    insert.handle_key(shift_tab());
+    type_text(&mut insert, "z");
+    assert_eq!(insert.dest(), "repox");
+    // A `.git`-suffixed or padded source never clobbers an edit.
+    let mut trimmed = clone_dialog(Some("/work"), &[], &[]);
+    type_text(&mut trimmed, "git@h:acme/repo.git");
+    trimmed.handle_key(key(KeyCode::Tab));
+    trimmed.handle_key(key(KeyCode::Char('x')));
+    trimmed.handle_key(shift_tab());
+    trimmed.handle_key(key(KeyCode::End));
+    type_text(&mut trimmed, " ");
+    assert_eq!(trimmed.dest(), "repox");
+
+    let mut back = clone_dialog(Some("/work"), &[], &[]);
+    type_text(&mut back, "git@h:acme/repo.git");
+    back.handle_key(key(KeyCode::Tab));
+    back.handle_key(key(KeyCode::Backspace));
+    assert_eq!(back.dest(), "rep");
+    back.handle_key(shift_tab());
+    type_text(&mut back, "z");
+    assert_eq!(back.dest(), "rep");
+
+    let mut delete = clone_dialog(Some("/work"), &[], &[]);
+    type_text(&mut delete, "git@h:acme/repo.git");
+    delete.handle_key(key(KeyCode::Tab));
+    delete.handle_key(key(KeyCode::Home));
+    delete.handle_key(key(KeyCode::Delete));
+    assert_eq!(delete.dest(), "epo");
+    delete.handle_key(shift_tab());
+    type_text(&mut delete, "z");
+    assert_eq!(delete.dest(), "epo");
+}
+
+#[test]
+fn clone_dest_stays_empty_when_source_has_no_name() {
+    let mut dialog = clone_dialog(Some("/work"), &[], &[]);
+    type_text(&mut dialog, "..");
+    assert_eq!(dialog.dest(), "");
+    for _ in 0..2 {
+        dialog.handle_key(key(KeyCode::Backspace));
+    }
+    type_text(&mut dialog, "https://github.com/acme/repo.git");
+    assert_eq!(dialog.dest(), "repo");
+    let n = dialog.source().chars().count();
+    for _ in 0..n {
+        dialog.handle_key(key(KeyCode::Backspace));
+    }
+    type_text(&mut dialog, ".");
+    assert_eq!(dialog.dest(), "");
 }
 
 #[test]

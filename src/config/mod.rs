@@ -21,7 +21,7 @@ const DEFAULT_CONFIG_FILE: &str = "~/.config/contx/config.toml";
 /// Multiplexer-neutral usage, printed for `--help` / `-h`.
 pub const USAGE: &str = "\
 contx [options]
-contx [options] clone <source> <destination>
+contx [options] clone <source> [destination]
 contx [options] delete [--dry-run] [--permanent] [--force] <path>
 
   -c, --config-file <path>         configuration file
@@ -311,7 +311,12 @@ fn finish_command(pending: PendingCommand) -> Result<Command> {
             destination,
         } => {
             let source = source.ok_or(ConfigError::ArgNotFound)?;
-            let destination = destination.ok_or(ConfigError::ArgNotFound)?;
+            let destination = match destination {
+                Some(dest) => dest,
+                None => crate::clone::default_clone_dest_name(&source)
+                    .ok_or_else(|| ConfigError::ArgIsNotValid(source.clone()))?
+                    .to_string(),
+            };
             Ok(Command::Clone {
                 source,
                 destination,

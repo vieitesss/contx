@@ -642,15 +642,19 @@ impl ActionDialog {
                 None
             }
             KeyCode::Backspace if typing => {
+                let item = self.item();
                 if let Some(field) = self.active_field_mut() {
                     field.backspace();
                 }
+                self.after_clone_field_edit(item);
                 None
             }
             KeyCode::Delete if typing => {
+                let item = self.item();
                 if let Some(field) = self.active_field_mut() {
                     field.delete();
                 }
+                self.after_clone_field_edit(item);
                 None
             }
             KeyCode::Char('[') if !typing => {
@@ -676,12 +680,33 @@ impl ActionDialog {
                 None
             }
             KeyCode::Char(c) if typing && !c.is_control() => {
+                let item = self.item();
                 if let Some(field) = self.active_field_mut() {
                     field.insert(c);
                 }
+                self.after_clone_field_edit(item);
                 None
             }
             _ => None,
+        }
+    }
+
+    fn after_clone_field_edit(&mut self, item: Option<FocusItem>) {
+        let Op::Clone { form, .. } = &mut self.op else {
+            return;
+        };
+        match item {
+            Some(FocusItem::Dest) => form.dest_edited = true,
+            Some(FocusItem::Source) if !form.dest_edited => {
+                let text =
+                    match clone::default_clone_dest_name(form.source.text()) {
+                        Some(name) if form.parent.is_some() => name.to_string(),
+                        Some(name) => format!("~/{name}"),
+                        None => String::new(),
+                    };
+                form.dest.set_str(&text);
+            }
+            _ => {}
         }
     }
 

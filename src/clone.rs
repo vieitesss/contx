@@ -145,6 +145,69 @@ impl Interact for ProductionInteract {
     }
 }
 
+/// Directory name `git clone` uses when destination is omitted.
+/// Mirrors git's naming for the source forms contx accepts:
+/// surrounding whitespace and trailing slashes never contribute,
+/// a trailing `/.git` names the parent directory (the git dir
+/// itself), one final `.git` suffix is stripped from the last
+/// component, and a host with no path (`host:`, `git@host:`)
+/// falls back to the host name without userinfo. Never panics;
+/// `None` when the result would be empty, `.`, `..`, or `.git`.
+pub(crate) fn default_clone_dest_name(source: &str) -> Option<&str> {
+    let trimmed = source.trim();
+    if url_with_empty_host_and_path(trimmed) {
+        return None;
+    }
+    let trimmed = trimmed.trim_end_matches('/');
+    let trimmed = match trimmed.strip_suffix("/.git") {
+        Some(parent) => parent.trim_end_matches('/'),
+        None => trimmed,
+    };
+    if trimmed.is_empty() {
+        return None;
+    }
+    let component = last_component(trimmed);
+    let name = if component.is_empty() {
+        // `host:` names the host; the git suffix still applies.
+        host_name(trimmed)
+    } else {
+        component
+    };
+    match name.strip_suffix(".git").unwrap_or(name) {
+        "" | "." | ".." => None,
+        other => Some(other),
+    }
+}
+
+/// Last `/`-separated component, else the last `:`-separated
+/// component (scp-style), else the whole string.
+fn last_component(source: &str) -> &str {
+    if let Some((_, rest)) = source.rsplit_once('/') {
+        rest
+    } else if let Some((_, rest)) = source.rsplit_once(':') {
+        rest
+    } else {
+        source
+    }
+}
+
+/// Host name for a pathless source (`host:`, `git@host:`).
+/// Userinfo drops, and a colon in the host part still splits,
+/// so `x:y:` names `y` like git does.
+fn host_name(source: &str) -> &str {
+    let host = source.strip_suffix(':').unwrap_or(source);
+    let host = host.rsplit_once('@').map_or(host, |(_, host)| host);
+    last_component(host)
+}
+
+/// A URL whose authority and path are both empty (`a://`,
+/// `a:///`) has no directory name to guess, matching git.
+fn url_with_empty_host_and_path(source: &str) -> bool {
+    source
+        .split_once("://")
+        .is_some_and(|(_, rest)| rest.trim_matches('/').is_empty())
+}
+
 /// Expand `~` and env vars. Relatives join `relative_base` when given
 /// (CLI: caller CWD; picker: preselected group). Without a base,
 /// a relative dest is rejected — never silently HOME/CWD.

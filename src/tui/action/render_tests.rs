@@ -130,12 +130,10 @@ fn current_stage_body_uses_bg_alt() {
 fn completed_stage_collapses_to_summary() {
     let mut dialog = clone_dialog(Some("/work"));
     type_text(&mut dialog, "git@x:y.git");
-    dialog.handle_key(key(KeyCode::Tab));
-    type_text(&mut dialog, "repo");
     dialog.handle_key(key(KeyCode::Enter));
     let buf = paint(&dialog, 80, 24);
     let text = buf_text(&buf);
-    assert!(text.contains("git@x:y.git → /work/repo"), "{text}");
+    assert!(text.contains("git@x:y.git → /work/y"), "{text}");
     assert!(text.contains("Cancel git"), "{text}");
 }
 
@@ -238,8 +236,6 @@ fn toast_success_is_green_cancel_is_accent() {
 fn force_stop_is_the_only_action_after_grace() {
     let mut dialog = clone_dialog(Some("/work"));
     type_text(&mut dialog, "src.git");
-    dialog.handle_key(key(KeyCode::Tab));
-    type_text(&mut dialog, "repo");
     dialog.handle_key(key(KeyCode::Enter));
     dialog.handle_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL));
     let t0 = Instant::now();

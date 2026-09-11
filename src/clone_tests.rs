@@ -193,6 +193,49 @@ impl GitClone for LocalGit {
 }
 
 #[test]
+fn default_clone_dest_name_matches_git_clone_naming() {
+    let cases = [
+        // Local paths: a trailing `/.git` names the git directory.
+        ("/tmp/x/repo/.git", Some("repo")),
+        ("repo/.git", Some("repo")),
+        ("https://github.com/acme/repo.git", Some("repo")),
+        ("https://github.com/acme/repo/", Some("repo")),
+        ("https://github.com/acme/repo.git/", Some("repo")),
+        ("https://github.com/acme/repo.git ", Some("repo")),
+        ("  https://github.com/acme/repo.git\t", Some("repo")),
+        ("git@github.com:acme/repo.git", Some("repo")),
+        ("git@github.com:repo", Some("repo")),
+        ("/local/path/repo", Some("repo")),
+        ("repo.git", Some("repo")),
+        // A trailing `/.git` falls back to the parent component.
+        ("https://host/acme/.git", Some("acme")),
+        ("https://host/.git", Some("host")),
+        ("host:acme/.git", Some("acme")),
+        // Host-only sources name the host, without userinfo.
+        ("https://host/", Some("host")),
+        ("host:", Some("host")),
+        ("git@host:", Some("host")),
+        ("host:repo.git", Some("repo")),
+        // `.git` and dot names are never destinations.
+        ("host:.git", None),
+        (".git", None),
+        ("", None),
+        (".", None),
+        ("..", None),
+        // A URL with neither host nor path has no name (git refuses).
+        ("https://", None),
+        ("host://", None),
+    ];
+    for (source, expected) in cases {
+        assert_eq!(
+            super::default_clone_dest_name(source),
+            expected,
+            "source {source:?}"
+        );
+    }
+}
+
+#[test]
 fn resolve_expands_tilde_env_and_cli_relative_from_injected_cwd() {
     let d = TempDir::new();
     let home = d.child("home");

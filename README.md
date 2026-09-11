@@ -56,7 +56,7 @@ The repo `config.toml` is a local example. It is not installed for you.
 
 ```
 contx [options]
-contx [options] clone <source> <destination>
+contx [options] clone <source> [destination]
 contx [options] delete [--dry-run] [--permanent] [--force] <path>
 
   -c, --config-file <path>         configuration file
@@ -102,7 +102,7 @@ Clone source, destination, and the optional config-path choice are native fields
 
 While a Git child is running in the dialog, Ctrl-G requests cancellation; after a grace period an explicit Force Stop appears. Escape does not kill a running child. The picker’s Ctrl-G last-row motion applies only when the dialog is closed.
 
-Clone destination defaults relative to the focused group (the focused candidate’s group, or the focused header). With no group, the destination must be absolute or `~`; relatives are never silently resolved against `$HOME` or the process working directory.
+Clone destination defaults relative to the focused group (the focused candidate’s group, or the focused header). Destination pre-fills with the repository name derived from the clone source the way `git clone` derives it (`<repo>` relative to the focused group, `~/<repo>` with no group), keeps tracking clone source edits until the field is edited, and is never overwritten after that. With no group, the destination must be absolute or `~`; relatives are never silently resolved against `$HOME` or the process working directory (the visible `~/` is editable text, not silent resolution).
 
 After a successful clone, the catalog is rediscovered and the current query is kept. The new path is focused only if it is a discovered session candidate that matches that query; otherwise success is reported without inventing a row. After a successful deletion, the catalog is rediscovered, the query is kept, and focus moves to the nearest remaining visible row. A clone or deletion that succeeds but whose refresh fails is still kept. Success shows a transient three-second message; cancellation is brief; errors and hard blockers remain until acknowledged.
 
@@ -111,10 +111,10 @@ Enter on a folded header never activates a project. Each candidate can show Git 
 ## Clone
 
 ```
-contx clone <source> <destination>
+contx clone <source> [destination]
 ```
 
-`<source>` is anything `git clone` accepts, including SSH. `contx` runs `git clone <source> <destination>` with no extra flags (no branch, depth, or submodule options). Git uses the terminal for auth and output.
+`<source>` is anything `git clone` accepts, including SSH. `contx` runs `git clone <source> <destination>` with no extra flags (no branch, depth, or submodule options). When destination is omitted, `<destination>` is the repository name derived from the clone source (same rule `git clone` uses), resolved from the process working directory. An explicit destination behaves as before. Git uses the terminal for auth and output.
 
 The destination must not already exist. Relatives on the CLI are resolved from the process working directory (`~` and environment variables are expanded). `contx` prints the absolute destination, then clones.
 
