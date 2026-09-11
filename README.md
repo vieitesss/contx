@@ -1,6 +1,6 @@
 # contx
 
-`contx` is a terminal picker for project directories. It lists **session candidates** from your config, lets you fuzzy-search them with Git context, and activates the matching **project target**: a tmux **session** or a Herdr **workspace**. It can also clone a Git source into a new directory and delete an existing session candidate.
+`contx` is a terminal picker for project directories. It lists **session candidates** from your config, lets you fuzzy-search them with Git context, and activates the matching **project target**: a tmux **session** or a Herdr **workspace**. It can also clone a Git source into a new directory, create an empty directory, and delete an existing session candidate.
 
 Candidate discovery, Git inspection, and the picker do not depend on which multiplexer you use. Activation talks to one backend only. `contx` does not list or manage Herdr panes, tabs, or agents, and it does not control one multiplexer from the other.
 
@@ -94,17 +94,19 @@ Type to fuzzy-search. Groups start folded.
 | Ctrl-X | Open the action menu (sequential, not a chord) |
 | Ctrl-C | Quit without activating |
 
-Action menu: `c` clones, `d` deletes. Up / Down (also `k` / `j`) and Enter select an item. Escape or Ctrl-X again cancels without changing the query. Clone is always available. Delete is available only on a candidate row, not on a group header or an empty catalog.
+Action menu: `c` clones, `n` creates a directory, `d` deletes. Up / Down (also `k` / `j`) and Enter select an item. Escape or Ctrl-X again cancels without changing the query. Clone and new directory are always available. Delete is available only on a candidate row, not on a group header or an empty catalog.
 
-Picker-initiated clone and deletion open a floating **progressive action dialog** over the preserved picker. The current stage is expanded; completed stages collapse to inspectable summaries. There is no terminal handoff. Neither action activates a project target. CLI `clone` and `delete` remain ordinary non-TUI commands with inherited terminal behavior.
+Clone and directory creation open a floating **progressive action dialog** over the preserved picker. The current stage is expanded; completed stages collapse to inspectable summaries. There is no terminal handoff. Neither action activates a project target. CLI `clone` and `delete` remain ordinary non-TUI commands with inherited terminal behavior.
 
-Clone source, destination, and the optional config-path choice are native fields. Deletion preflight, findings, and confirmations are native controls. Interactive Git clone, fetch, and worktree deletion run in an embedded PTY/terminal area. Recognized Git/SSH prompts get native controls; unknown prompts remain usable through the terminal fallback.
+Clone source, destination, and the optional config-path choice are native fields. Directory creation only asks for a destination. Deletion preflight, findings, and confirmations are native controls. Interactive Git clone, fetch, and worktree deletion run in an embedded PTY/terminal area. Recognized Git/SSH prompts get native controls; unknown prompts remain usable through the terminal fallback.
 
 While a Git child is running in the dialog, Ctrl-G requests cancellation; after a grace period an explicit Force Stop appears. Escape does not kill a running child. The picker’s Ctrl-G last-row motion applies only when the dialog is closed.
 
-Clone destination defaults relative to the focused group (the focused candidate’s group, or the focused header). Destination pre-fills with the repository name derived from the clone source the way `git clone` derives it (`<repo>` relative to the focused group, `~/<repo>` with no group), keeps tracking clone source edits until the field is edited, and is never overwritten after that. With no group, the destination must be absolute or `~`; relatives are never silently resolved against `$HOME` or the process working directory (the visible `~/` is editable text, not silent resolution).
+The clone source pre-fills with `https://github.com/`, ready for a repository path: typing `owner/repo` yields `https://github.com/owner/repo`. Edit or clear the field to clone from anywhere else.
 
-After a successful clone, the catalog is rediscovered and the current query is kept. The new path is focused only if it is a discovered session candidate that matches that query; otherwise success is reported without inventing a row. After a successful deletion, the catalog is rediscovered, the query is kept, and focus moves to the nearest remaining visible row. A clone or deletion that succeeds but whose refresh fails is still kept. Success shows a transient three-second message; cancellation is brief; errors and hard blockers remain until acknowledged.
+Clone destination defaults relative to the focused group (the focused candidate’s group, or the focused header). Destination pre-fills with the repository name derived from the clone source the way `git clone` derives it (`<repo>` relative to the focused group, `~/<repo>` with no group), keeps tracking clone source edits until the field is edited, and is never overwritten after that. With no group, the destination must be absolute or `~`; relatives are never silently resolved against `$HOME` or the process working directory (the visible `~/` is editable text, not silent resolution). Directory creation uses the same destination rules but derives nothing from a source.
+
+After a successful clone or directory creation, the catalog is rediscovered and the current query is kept. The new path is focused only if it is a discovered session candidate that matches that query; otherwise success is reported without inventing a row. After a successful deletion, the catalog is rediscovered, the query is kept, and focus moves to the nearest remaining visible row. An action that succeeds but whose refresh fails is still kept. Success shows a transient three-second message; cancellation is brief; errors and hard blockers remain until acknowledged.
 
 Enter on a folded header never activates a project. Each candidate can show Git branch (or short SHA), dirty/add/delete counts, and cached upstream ahead/behind. Linked worktrees nest under their main checkout.
 
@@ -121,6 +123,10 @@ The destination must not already exist. Relatives on the CLI are resolved from t
 Failure or interruption leaves any surviving destination in place and does not change the config. If the clone succeeds but a requested config update fails, the destination is kept and the command still fails.
 
 When stdin is a TTY and the destination is not already covered, `contx` asks whether to add the destination’s parent to `paths`. The question is asked before `git clone`; the file is written only after a successful clone. Declining still clones.
+
+## New directory
+
+Action menu `n` creates an empty directory instead of cloning. It has two stages, destination and result, and needs no Git child. The destination resolves exactly like a clone destination; nested paths are allowed, so `a/b` creates both directories. `contx` refuses a destination that already exists, creates the directory, and offers to add its parent to `paths` under the same covered rule as clone. Nothing is activated; the catalog is rediscovered and the current query is kept.
 
 ## Delete
 

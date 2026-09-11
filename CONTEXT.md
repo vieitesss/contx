@@ -21,8 +21,9 @@
 - **home repository discovery**: Inspecting only the immediate child directories of `$HOME` for Git repositories.
 - **tmux command boundary**: The subprocess call that executes tmux and converts its output or failure into `TmuxError`.
 - **session candidate**: Any directory made available through configured-path expansion or discovery. Independent of which multiplexer will activate it.
-- **clone source**: A provider-independent Git locator or reference, including SSH. Not a session candidate, because it is not yet a local directory.
+- **clone source**: A provider-independent Git locator or reference, including SSH. Not a session candidate, because it is not yet a local directory. The picker pre-fills the clone source field with `https://github.com/` and leaves it fully editable.
 - **cloning**: Creating a local Git repository from a clone source. Does not activate, enter, or open a project target; the user separately chooses whether to enter it.
+- **directory creation**: The picker action that creates an empty local directory at a clone destination without running Git. Shares destination resolution and the add-parent offer with cloning, allows nested paths, and never activates a project target.
 - **clone destination**: The local path created for a cloned repository. It must not already exist.
 - **search result**: A session candidate matching the current query, together with match information.
 - **checkout identity**: The Git worktree's currently checked-out named branch, or a short SHA when detached. Independent of Git change summary and of cached upstream divergence; omitted while loading, when Git inspection failed, and for non-repos; never invents a branch.
