@@ -560,7 +560,7 @@ fn ctrl_x_opens_action_menu_escape_closes_without_editing_query() {
     assert!(picker.menu().is_none());
     assert_eq!(picker.handle_key(ctrl(KeyCode::Char('x'))), Intent::None);
     let menu = picker.menu().expect("menu open");
-    assert_eq!(menu.selected, 0);
+    assert_eq!(menu.selected, None);
     assert!(!menu.delete_enabled);
     assert_eq!(picker.handle_key(key(KeyCode::Char('z'))), Intent::None);
     assert_eq!(picker.query(), "");
@@ -592,12 +592,49 @@ fn action_menu_arrows_and_enter_select() {
     let mut picker = two_groups();
     picker.handle_key(key(KeyCode::Enter));
     picker.handle_key(ctrl(KeyCode::Char('x')));
+    assert_eq!(picker.menu().unwrap().selected, None);
+    assert_eq!(picker.handle_key(key(KeyCode::Up)), Intent::None);
+    assert_eq!(picker.menu().unwrap().selected, Some(0));
     assert_eq!(picker.handle_key(key(KeyCode::Down)), Intent::None);
-    assert_eq!(picker.menu().unwrap().selected, 1);
+    assert_eq!(picker.menu().unwrap().selected, Some(1));
     assert_eq!(
         picker.handle_key(key(KeyCode::Enter)),
         Intent::Delete("/g1/a1".into())
     );
+}
+
+#[test]
+fn action_menu_k_and_j_navigate_like_up_and_down() {
+    let mut picker = two_groups();
+    picker.handle_key(key(KeyCode::Enter));
+    picker.handle_key(ctrl(KeyCode::Char('x')));
+    assert_eq!(picker.handle_key(key(KeyCode::Char('k'))), Intent::None);
+    assert_eq!(picker.menu().unwrap().selected, Some(0));
+    assert_eq!(picker.handle_key(key(KeyCode::Char('j'))), Intent::None);
+    assert_eq!(picker.menu().unwrap().selected, Some(1));
+    assert_eq!(picker.handle_key(key(KeyCode::Char('k'))), Intent::None);
+    assert_eq!(picker.menu().unwrap().selected, Some(0));
+}
+
+#[test]
+fn action_menu_enter_without_navigation_clones() {
+    let mut picker = two_groups();
+    picker.handle_key(ctrl(KeyCode::Char('x')));
+    assert_eq!(picker.menu().unwrap().selected, None);
+    assert_eq!(picker.handle_key(key(KeyCode::Enter)), Intent::Clone);
+    assert!(picker.menu().is_none());
+}
+
+#[test]
+fn action_menu_down_without_delete_keeps_selection_unchanged() {
+    let mut picker = two_groups();
+    picker.handle_key(ctrl(KeyCode::Char('x')));
+    assert!(!picker.menu().unwrap().delete_enabled);
+    assert_eq!(picker.handle_key(key(KeyCode::Down)), Intent::None);
+    assert_eq!(picker.menu().unwrap().selected, None);
+    assert_eq!(picker.handle_key(key(KeyCode::Char('j'))), Intent::None);
+    assert_eq!(picker.menu().unwrap().selected, None);
+    assert_eq!(picker.handle_key(key(KeyCode::Enter)), Intent::Clone);
 }
 
 #[test]

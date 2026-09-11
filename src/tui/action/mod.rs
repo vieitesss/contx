@@ -26,7 +26,8 @@ use clone_flow::CloneJob;
 use delete_flow::{DeleteJob, DeletePtyPhase};
 use field::Field;
 use prompt::{Interaction, PromptDecoder, PromptKind};
-use pty::{PtyEvent, PtySession, PtySize, PtyTransport};
+pub(crate) use pty::PtyEvent;
+use pty::{PtySession, PtySize, PtyTransport};
 use state::{CloneAuth, CloneForm, DeleteForm};
 
 pub(crate) use clone_flow::{ConfigAppend, ConfigAppendEvent};
@@ -45,6 +46,11 @@ pub(crate) use state::{
 
 /// Ctrl-G interrupt grace before Force Stop is offered.
 pub(crate) const GRACE_FOR: Duration = Duration::from_millis(900);
+
+/// Hint shown while the owning `Tui` refreshes the catalog after a
+/// successful mutation. Escape and Acknowledge wait for it, so the
+/// hint clears once the refresh settles.
+pub(crate) const REFRESH_PENDING_HINT: &str = "waiting for refresh to finish";
 
 /// Probe used for inline clone destination validation. Later nodes
 /// supply filesystem/config implementations; tests inject scripts.
@@ -174,8 +180,44 @@ impl ActionDialog {
         &self.hint
     }
 
+    pub(crate) fn set_hint(&mut self, hint: impl Into<String>) {
+        self.hint = hint.into();
+    }
+
+    /// Drop the pending-refresh hint once the refresh settles, so a
+    /// sticky completion does not keep saying it is still running.
+    pub(crate) fn clear_refresh_hint(&mut self) {
+        if self.hint == REFRESH_PENDING_HINT {
+            self.hint.clear();
+        }
+    }
+
     pub(crate) fn cancel_state(&self) -> CancelState {
         self.cancel
+    }
+
+    pub(crate) fn awaiting(&self) -> crate::tui::hints::DialogAwaiting {
+        use crate::tui::hints::DialogAwaiting;
+        if self.awaiting_config {
+            DialogAwaiting::Config
+        } else if self.awaiting_mutate {
+            DialogAwaiting::Mutate
+        } else if self.awaiting_inspect {
+            DialogAwaiting::Inspect
+        } else {
+            DialogAwaiting::None
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_awaiting_for_test(
+        &mut self,
+        awaiting: crate::tui::hints::DialogAwaiting,
+    ) {
+        use crate::tui::hints::DialogAwaiting;
+        self.awaiting_config = matches!(awaiting, DialogAwaiting::Config);
+        self.awaiting_mutate = matches!(awaiting, DialogAwaiting::Mutate);
+        self.awaiting_inspect = matches!(awaiting, DialogAwaiting::Inspect);
     }
 
     pub(crate) fn refresh_requested(&self) -> bool {
@@ -559,6 +601,16 @@ impl ActionDialog {
 
     pub(crate) fn item(&self) -> Option<FocusItem> {
         self.items().get(self.focus).copied()
+    }
+
+    /// A completed stage is selected: `i` (or Space) inspects it.
+    pub(crate) fn inspect_enabled(&self) -> bool {
+        self.selected_stage < self.current_stage()
+    }
+
+    /// Space toggles the add-parent option only on that focused item.
+    pub(crate) fn add_parent_focused(&self) -> bool {
+        self.item() == Some(FocusItem::AddParent)
     }
 
     pub(crate) fn clone_validation_error(&self) -> Option<String> {
@@ -1433,7 +1485,7 @@ impl ActionDialog {
         self.outcome.as_ref().is_some_and(DialogOutcome::needs_ack)
     }
 
-    fn typing(&self) -> bool {
+    pub(crate) fn typing(&self) -> bool {
         matches!(
             self.item(),
             Some(

@@ -24,8 +24,8 @@ use terminal_colorsaurus::ThemeMode;
 /// In-picker action menu opened by Ctrl-X, then a sequential key.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ActionMenu {
-    /// 0 = clone, 1 = delete.
-    pub selected: usize,
+    /// None = no explicit navigation yet, 0 = clone, 1 = delete.
+    pub selected: Option<usize>,
     pub delete_enabled: bool,
 }
 
@@ -99,7 +99,7 @@ impl Picker {
 
     fn open_menu(&mut self) {
         self.menu = Some(ActionMenu {
-            selected: 0,
+            selected: None,
             delete_enabled: self.delete_enabled(),
         });
     }
@@ -135,7 +135,7 @@ impl Picker {
             }
             KeyCode::Up | KeyCode::Char('k') => {
                 if let Some(menu) = &mut self.menu {
-                    menu.selected = 0;
+                    menu.selected = Some(0);
                 }
                 Intent::None
             }
@@ -143,18 +143,18 @@ impl Picker {
                 if let Some(menu) = &mut self.menu
                     && menu.delete_enabled
                 {
-                    menu.selected = 1;
+                    menu.selected = Some(1);
                 }
                 Intent::None
             }
             KeyCode::Enter => {
-                let selected = self.menu.as_ref().map(|m| m.selected);
+                let selected = self.menu.as_ref().and_then(|m| m.selected);
                 match selected {
-                    Some(0) => {
+                    Some(1) => self.take_delete(),
+                    Some(0) | None => {
                         self.menu = None;
                         Intent::Clone
                     }
-                    Some(1) => self.take_delete(),
                     _ => Intent::None,
                 }
             }
@@ -176,6 +176,17 @@ impl Picker {
 
     pub(crate) fn delete_enabled(&self) -> bool {
         matches!(self.focus(), Some(VisualTarget::Child(_)))
+    }
+
+    /// Folded header focused: Enter/Right/Space expands it.
+    pub(crate) fn can_expand(&self) -> bool {
+        matches!(self.focus(), Some(VisualTarget::Header(..)))
+    }
+
+    /// Child focused under a grouped list: Left collapses its parent.
+    pub(crate) fn can_collapse(&self) -> bool {
+        matches!(self.focus(), Some(VisualTarget::Child(_)))
+            && !self.list.groups.is_empty()
     }
 
     pub(crate) fn menu(&self) -> Option<&ActionMenu> {

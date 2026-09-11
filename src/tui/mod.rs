@@ -1,5 +1,6 @@
 mod action;
 mod git;
+mod hints;
 mod picker;
 mod selection;
 mod sessions_list;
@@ -10,8 +11,15 @@ use crate::{
     delete,
     theme::Theme,
     tui::{
-        action::{ActionDialog, DialogOutcome, PortablePty, ToastKind},
+        action::{
+            ActionDialog, DialogOutcome, FocusItem, PortablePty,
+            REFRESH_PENDING_HINT, ToastKind,
+        },
         git::start_poll,
+        hints::{
+            DialogHintState, HintChip, HintRow, HintSurface, format_hint_rows,
+            shortcut_hints,
+        },
         picker::Picker,
         selection::Intent,
         workers::{
@@ -59,6 +67,10 @@ pub struct Tui {
     refresh_tx: mpsc::Sender<RefreshEvent>,
     refresh_rx: mpsc::Receiver<RefreshEvent>,
     refresh_in_flight: bool,
+    /// Test-only: keep refresh requests pending instead of spawning
+    /// the worker, so a test can deliver the event by hand.
+    #[cfg(test)]
+    hold_refresh: bool,
 }
 
 impl Tui {
@@ -89,6 +101,8 @@ impl Tui {
             refresh_tx,
             refresh_rx,
             refresh_in_flight: false,
+            #[cfg(test)]
+            hold_refresh: false,
         }
     }
 
@@ -127,6 +141,12 @@ impl Tui {
             return;
         }
         if self.dialog.is_some() {
+            if self.refresh_in_flight && self.refresh_blocks_key(&key) {
+                if let Some(dialog) = &mut self.dialog {
+                    dialog.set_hint(REFRESH_PENDING_HINT);
+                }
+                return;
+            }
             let out = self.dialog.as_mut().and_then(|d| d.handle_key(key));
             self.after_dialog(out);
             return;
@@ -155,6 +175,21 @@ impl Tui {
 
     fn restart_poll(&mut self, candidates: &[SessionCandidate]) {
         self.git_rx = start_poll(SessionCandidate::paths(candidates));
+    }
+
+    /// Keys that would drop the dialog while the catalog refresh it
+    /// started is still in flight: Escape (cancel) and Enter on the
+    /// Acknowledge stop. The picker update must land first, so the
+    /// dialog stays open until `on_refresh` clears the pending state.
+    fn refresh_blocks_key(&self, key: &KeyEvent) -> bool {
+        match key.code {
+            KeyCode::Esc => true,
+            KeyCode::Enter => self
+                .dialog
+                .as_ref()
+                .is_some_and(|d| d.item() == Some(FocusItem::Ack)),
+            _ => false,
+        }
     }
 
     fn open_clone_dialog(&mut self) {
@@ -248,6 +283,10 @@ impl Tui {
             return;
         };
         self.refresh_in_flight = true;
+        #[cfg(test)]
+        if self.hold_refresh {
+            return;
+        }
         spawn_refresh(self.refresh_tx.clone(), generation, kind, config_path);
     }
 
@@ -312,6 +351,9 @@ impl Tui {
                         .is_some_and(DialogOutcome::needs_ack),
                 };
                 self.refresh_in_flight = false;
+                if let Some(dialog) = &mut self.dialog {
+                    dialog.clear_refresh_hint();
+                }
                 if sticky {
                     return;
                 }
@@ -329,6 +371,7 @@ impl Tui {
             Err(e) => {
                 if let Some(dialog) = &mut self.dialog {
                     dialog.apply_refresh_error(e);
+                    dialog.clear_refresh_hint();
                 }
                 self.refresh_in_flight = false;
             }
@@ -391,6 +434,54 @@ impl Tui {
             .unwrap_or_default()
     }
 
+    #[cfg(test)]
+    pub(crate) fn mark_dialog_child_started_for_test(&mut self) {
+        if let Some(dialog) = &mut self.dialog {
+            dialog.mark_child_started();
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn hold_refresh_for_test(&mut self, hold: bool) {
+        self.hold_refresh = hold;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_dialog_awaiting_for_test(
+        &mut self,
+        awaiting: crate::tui::hints::DialogAwaiting,
+    ) {
+        if let Some(dialog) = &mut self.dialog {
+            dialog.set_awaiting_for_test(awaiting);
+        }
+    }
+
+    fn hint_surface(&self) -> HintSurface {
+        if let Some(dialog) = &self.dialog {
+            return HintSurface::Dialog(DialogHintState {
+                running: dialog.running(),
+                cancel: dialog.cancel_state(),
+                item_count: dialog.items().len(),
+                sticky: dialog.outcome().is_some_and(DialogOutcome::needs_ack),
+                awaiting: dialog.awaiting(),
+                typing: dialog.typing(),
+                inspect_enabled: dialog.inspect_enabled(),
+                add_parent_focused: dialog.add_parent_focused(),
+                refresh_pending: self.refresh_in_flight,
+            });
+        }
+        if let Some(menu) = self.picker.menu() {
+            return HintSurface::PickerPrefix {
+                delete_enabled: menu.delete_enabled,
+                selected: menu.selected,
+            };
+        }
+        HintSurface::PickerIdle {
+            expand: self.picker.can_expand(),
+            collapse: self.picker.can_collapse(),
+        }
+    }
+
     fn render(&mut self, area: Rect, buf: &mut Buffer) {
         Widget::render(self, area, buf);
     }
@@ -419,20 +510,39 @@ impl Widget for &mut Tui {
             return;
         }
 
-        let menu = self.picker.menu().is_some();
-        let mut constraints = vec![Constraint::Length(1)];
-        if menu {
-            constraints.push(Constraint::Length(1));
-        }
-        constraints.push(Constraint::Fill(1));
+        let t = Theme::get(self.theme_mode);
+        buf.set_style(area, Style::new().bg(t.bg).fg(t.fg));
+
+        let chips = shortcut_hints(self.hint_surface());
+        // Small-height policy: hints never starve the picker. The
+        // budget leaves Search (one row) plus one two-row list stop
+        // whenever the height allows it, and always keeps one hint
+        // row visible at height two. Hints pack, cap, and ellipsize
+        // to fit; shorter terminals degrade top to bottom (search,
+        // list, hints).
+        let max_rows = area.height.saturating_sub(3).max(1) as usize;
+        let rows = if area.height >= 2 {
+            format_hint_rows(&chips, area.width as usize, max_rows)
+        } else {
+            Vec::new()
+        };
+        let (content, hint) = if area.height >= 2 {
+            let hint_h = rows.len().max(1) as u16;
+            let parts = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Fill(1), Constraint::Length(hint_h)])
+                .split(area);
+            (parts[0], Some(parts[1]))
+        } else {
+            (area, None)
+        };
+
+        let constraints = [Constraint::Length(1), Constraint::Fill(1)];
 
         let areas = Layout::default()
             .direction(Direction::Vertical)
             .constraints(constraints)
-            .split(area);
-
-        let t = Theme::get(self.theme_mode);
-        buf.set_style(area, Style::new().bg(t.bg).fg(t.fg));
+            .split(content);
 
         Line::from(vec![
             Span::styled("Search: ", Style::new().bg(t.bg).fg(t.operator)),
@@ -441,53 +551,86 @@ impl Widget for &mut Tui {
         ])
         .style(Style::new().bg(t.bg).fg(t.fg))
         .render(areas[0], buf);
-        if let Some(menu) = self.picker.menu().cloned() {
-            action_menu_line(menu.selected, menu.delete_enabled, t)
-                .render(areas[1], buf);
-            (&self.picker.selection).render(
-                areas[2],
-                buf,
-                &mut self.picker.list,
-            );
-        } else {
-            (&self.picker.selection).render(
-                areas[1],
-                buf,
-                &mut self.picker.list,
-            );
-        }
+        (&self.picker.selection).render(areas[1], buf, &mut self.picker.list);
         if let Some(dialog) = &self.dialog {
-            action::render_dialog(dialog, area, buf);
+            action::render_dialog(dialog, content, buf);
         }
         if let Some(toast) = &self.toast {
-            action::render_toast(area, buf, toast.kind, &toast.msg);
+            action::render_toast(content, buf, toast.kind, &toast.msg);
+        }
+        if let Some(hint) = hint {
+            for (i, row) in rows.iter().enumerate() {
+                let y = hint.y.saturating_add(i as u16);
+                if y >= hint.y.saturating_add(hint.height) {
+                    break;
+                }
+                let rect = Rect {
+                    x: hint.x,
+                    y,
+                    width: hint.width,
+                    height: 1,
+                };
+                hint_bar_line(row, hint.width as usize, t).render(rect, buf);
+            }
         }
     }
 }
 
-fn action_menu_line(
-    selected: usize,
-    delete_enabled: bool,
-    t: Theme,
-) -> Line<'static> {
-    let item = |label: &'static str, idx: usize, enabled: bool| {
-        let selected = selected == idx;
-        let mut style = Style::new().bg(t.bg);
-        if !enabled {
-            style = style.fg(t.comment);
-        } else if selected {
-            style = style.fg(t.accent).add_modifier(Modifier::BOLD);
-        } else {
-            style = style.fg(t.fg);
+fn hint_bar_line(row: &HintRow, width: usize, t: Theme) -> Line<'static> {
+    let text = row.text(width);
+    let st = |fg| Style::new().bg(t.bg).fg(fg);
+    let overlong = row.chips.len() == 1 && row.chips[0].width() > width;
+    if overlong || text.chars().count() < row_join_len(row) {
+        return Line::from(Span::styled(text, st(t.operator)));
+    }
+    let mut spans = Vec::new();
+    for (i, chip) in row.chips.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled(" ", st(t.operator)));
         }
-        Span::styled(label.to_string(), style)
+        spans.extend(chip_spans(chip, t));
+    }
+    if row.ellipsis {
+        spans.push(Span::styled("…", st(t.operator)));
+    }
+    Line::from(spans)
+}
+
+fn chip_spans(chip: &HintChip, t: Theme) -> Vec<Span<'static>> {
+    let key_style = if !chip.enabled {
+        Style::new()
+            .bg(t.bg_alt)
+            .fg(t.comment)
+            .add_modifier(Modifier::DIM)
+    } else if chip.selected {
+        Style::new()
+            .bg(t.bg_alt)
+            .fg(t.accent)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::new().bg(t.bg_alt).fg(t.comment)
     };
-    Line::from(vec![
-        Span::styled("Actions: ", Style::new().bg(t.bg).fg(t.operator)),
-        item("clone", 0, true),
-        Span::styled("  ", Style::new().bg(t.bg).fg(t.fg)),
-        item("delete", 1, delete_enabled),
-    ])
+    let label_style = if chip.enabled {
+        Style::new().bg(t.bg).fg(t.operator)
+    } else {
+        Style::new()
+            .bg(t.bg)
+            .fg(t.comment)
+            .add_modifier(Modifier::DIM)
+    };
+    match chip.label.split_once(' ') {
+        Some((key, label)) => vec![
+            Span::styled(format!(" {key} "), key_style),
+            Span::styled(label.to_string(), label_style),
+        ],
+        None => vec![Span::styled(format!(" {} ", chip.label), key_style)],
+    }
+}
+
+fn row_join_len(row: &HintRow) -> usize {
+    let n: usize = row.chips.iter().map(HintChip::width).sum::<usize>()
+        + row.chips.len().saturating_sub(1);
+    if row.ellipsis { n + 1 } else { n }
 }
 
 #[cfg(test)]
