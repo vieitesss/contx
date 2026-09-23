@@ -130,10 +130,16 @@ impl Selection {
     }
 
     fn remove_word(&mut self) {
-        match self.query.rfind(' ') {
-            Some(i) => self.query.truncate(i + 1),
-            None => self.query.clear(),
+        let mut chars: Vec<char> = self.query.chars().collect();
+        let mut start = chars.len();
+        while start > 0 && chars[start - 1].is_whitespace() {
+            start -= 1;
         }
+        while start > 0 && !chars[start - 1].is_whitespace() {
+            start -= 1;
+        }
+        chars.truncate(start);
+        self.query = chars.into_iter().collect();
     }
 
     fn refilter(&mut self) {

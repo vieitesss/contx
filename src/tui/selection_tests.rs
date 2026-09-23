@@ -76,6 +76,18 @@ fn word_deletion_removes_the_preceding_word() {
 }
 
 #[test]
+fn ctrl_w_handles_unicode_whitespace_and_empty_query() {
+    let mut sel = selection(&["/x/za"]);
+    type_text(&mut sel, "équipe\t東京");
+    assert_eq!(sel.handle_key(ctrl(KeyCode::Char('w'))), Intent::None);
+    assert_eq!(sel.query(), "équipe\t");
+    assert_eq!(sel.handle_key(ctrl(KeyCode::Char('w'))), Intent::None);
+    assert_eq!(sel.query(), "");
+    assert_eq!(sel.handle_key(ctrl(KeyCode::Char('w'))), Intent::None);
+    assert_eq!(sel.query(), "");
+}
+
+#[test]
 fn ctrl_c_exits_without_activating() {
     let mut sel = selection(&["/x/azb", "/y/ab"]);
     type_text(&mut sel, "ab");
