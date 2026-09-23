@@ -39,6 +39,11 @@ paths = [
 git-from-home = true
 multiplexer = "auto"   # auto | tmux | herdr
 permanent-delete = false
+
+[clone]
+default-protocol = "ssh"  # ssh | https
+ssh-prefix = "git@github.com:"
+https-prefix = "https://github.com"
 ```
 
 - `paths`: each entry expands `~` and environment variables and must become an absolute directory, or `dir/*`.
@@ -47,6 +52,7 @@ permanent-delete = false
 - `git-from-home`: when `true`, also include Git repositories among the immediate children of `$HOME` (each child that contains a `.git` directory or file). Configured paths come first; a duplicate keeps the first spelling.
 - `multiplexer`: omitted means `auto`.
 - `permanent-delete`: omitted means `false`. When `true`, deleting a symlink, ordinary directory, or standalone repository uses irreversible filesystem deletion instead of trash. Linked worktrees always use Git worktree deletion. The picker has no `--permanent` flag; it follows this setting.
+- `[clone]`: picker-only presets. Omitted values default to SSH, `git@github.com:`, and `https://github.com`. Prefix edits in the dialog last only for that clone; edit TOML to change future defaults. CLI `clone <source>` is unchanged.
 
 After a successful interactive clone whose destination is not already covered by `paths` or `git-from-home`, `contx` may offer to append the destination’s parent to `paths` in the active config. A destination already covered by a directory entry or a `dir/*` wildcard is not added again. Noninteractive clones never change the config.
 
@@ -98,11 +104,11 @@ Action menu: `c` clones, `n` creates a directory, `d` deletes. Up / Down (also `
 
 Clone and directory creation open a floating **progressive action dialog** over the preserved picker. The current stage is expanded; completed stages collapse to inspectable summaries. There is no terminal handoff. Neither action activates a project target. CLI `clone` and `delete` remain ordinary non-TUI commands with inherited terminal behavior.
 
-Clone source, destination, and the optional config-path choice are native fields. Directory creation only asks for a destination. Deletion preflight, findings, and confirmations are native controls. Interactive Git clone, fetch, and worktree deletion run in an embedded PTY/terminal area. Recognized Git/SSH prompts get native controls; unknown prompts remain usable through the terminal fallback.
+Clone protocol (SSH or HTTPS), repository path, editable protocol prefixes, destination, and the optional config-path choice are native controls. Directory creation only asks for a destination. Deletion preflight, findings, and confirmations are native controls. Interactive Git clone, fetch, and worktree deletion run in an embedded PTY/terminal area. Recognized Git/SSH prompts get native controls; unknown prompts remain usable through the terminal fallback.
 
 While a Git child is running in the dialog, Ctrl-G requests cancellation; after a grace period an explicit Force Stop appears. Escape does not kill a running child. The picker’s Ctrl-G last-row motion applies only when the dialog is closed.
 
-The clone source pre-fills with `https://github.com/`, ready for a repository path: typing `owner/repo` yields `https://github.com/owner/repo`. Edit or clear the field to clone from anywhere else.
+The picker clone composer starts with SSH selected. The repository path label shows `owner/repo` as a hint; the input remains empty. Type the repository path to produce `git@github.com:owner/repo`, or choose HTTPS for `https://github.com/owner/repo`. The destination is derived from the rightmost path component and keeps tracking source edits until the destination is manually edited. The protocol choices appear as a horizontal segmented switch and form one tab stop: Shift-Tab from the repository field focuses the currently selected protocol, and Left/Right or h/l selects a segment. Tab moves from protocol to repository to destination, then the **Edit prefixes** control and add-parent option; Shift-Tab moves back up the form. Prefix fields are hidden and skipped in the focus order until you expand **Edit prefixes** with Space. Space toggles **Edit prefixes** or add-parent when focused; Enter from any control submits the clone. Escape cancels. Invalid input displays an inline error and never starts Git. A slash is added between a prefix without a trailing `:` or `/` and the repository path.
 
 Clone destination defaults relative to the focused group (the focused candidate’s group, or the focused header). Destination pre-fills with the repository name derived from the clone source the way `git clone` derives it (`<repo>` relative to the focused group, `~/<repo>` with no group), keeps tracking clone source edits until the field is edited, and is never overwritten after that. With no group, the destination must be absolute or `~`; relatives are never silently resolved against `$HOME` or the process working directory (the visible `~/` is editable text, not silent resolution). Directory creation uses the same destination rules but derives nothing from a source.
 
