@@ -145,10 +145,51 @@ fn footer_chunks(area: Rect) -> (Rect, Rect, Rect) {
 fn render_a(dialog: &ActionDialog, area: Rect, buf: &mut Buffer) {
     let (body, hint, btns) = footer_chunks(area);
     let lines = accordion_lines(dialog, body.width as usize);
-    let skip = dialog.view_scroll.min(lines.len().saturating_sub(1));
+    let max_skip = lines.len().saturating_sub(body.height as usize);
+    let mut skip = dialog.view_scroll.min(max_skip);
+    if dialog.focus_scroll
+        && body.height > 0
+        && let Some(row) = focused_form_row(dialog)
+    {
+        if row < skip {
+            skip = row;
+        } else if row >= skip + body.height as usize {
+            skip = (row + 1 - body.height as usize).min(max_skip);
+        }
+    }
     put_lines(buf, body, lines.into_iter().skip(skip).collect());
     put_lines(buf, hint, vec![hint_line(dialog, hint.width as usize)]);
     put_lines(buf, btns, vec![buttons_line(dialog, btns.width as usize)]);
+}
+
+fn focused_form_row(dialog: &ActionDialog) -> Option<usize> {
+    let item = dialog.item()?;
+    let Op::Clone { form, .. } = &dialog.op else {
+        return None;
+    };
+    if form.kind != CloneKind::Repository || dialog.git_started() {
+        return None;
+    }
+
+    // The source/destination stage title is row 0 and its form starts at row 1.
+    let row = 1 + match item {
+        FocusItem::ProtocolSsh | FocusItem::ProtocolHttps => 0,
+        FocusItem::Source => 2,
+        FocusItem::Dest => 5,
+        FocusItem::PresetsToggle => {
+            5 + usize::from(dialog.abs_dest().is_ok()) + 1
+        }
+        FocusItem::SshPrefix => 6 + usize::from(dialog.abs_dest().is_ok()) + 1,
+        FocusItem::HttpsPrefix => {
+            7 + usize::from(dialog.abs_dest().is_ok()) + 1
+        }
+        FocusItem::AddParent => {
+            8 + usize::from(dialog.abs_dest().is_ok())
+                + if form.show_prefixes { 2 } else { 0 }
+        }
+        _ => return None,
+    };
+    Some(row)
 }
 
 pub(crate) fn render_toast(
@@ -189,6 +230,15 @@ fn blank(width: usize) -> Line<'static> {
 }
 
 fn hint_line(dialog: &ActionDialog, width: usize) -> Line<'static> {
+    if !dialog.git_started()
+        && let Some(err) = dialog.clone_validation_error()
+    {
+        return fill(
+            vec![Span::styled(trunc(&err, width), st(T.red, T.bg))],
+            width,
+            T.bg,
+        );
+    }
     let text = if !dialog.hint.is_empty() {
         dialog.hint.clone()
     } else if dialog.running() {
@@ -203,6 +253,8 @@ fn hint_line(dialog: &ActionDialog, width: usize) -> Line<'static> {
         }
     } else if dialog.git_started() {
         "prior inputs locked · [/] then i inspects a completed stage".into()
+    } else if repository_source_dest(dialog) {
+        source_dest_hint(dialog, width)
     } else {
         "Esc cancels · completed stages reopen with i".into()
     };
@@ -211,6 +263,60 @@ fn hint_line(dialog: &ActionDialog, width: usize) -> Line<'static> {
         width,
         T.bg,
     )
+}
+
+fn repository_source_dest(dialog: &ActionDialog) -> bool {
+    matches!(
+        &dialog.op,
+        Op::Clone { form, .. }
+            if form.kind == CloneKind::Repository
+                && form.stage == super::CloneStage::SourceDest
+                && !dialog.git_started()
+    )
+}
+
+fn source_dest_hint(dialog: &ActionDialog, width: usize) -> String {
+    let focus = dialog.item();
+    let mut candidates = Vec::with_capacity(6);
+    match focus {
+        Some(FocusItem::ProtocolSsh | FocusItem::ProtocolHttps) => {
+            candidates.push("h/l Switch");
+        }
+        Some(
+            FocusItem::Source
+            | FocusItem::Dest
+            | FocusItem::SshPrefix
+            | FocusItem::HttpsPrefix,
+        ) => {
+            candidates.push("Ctrl-W Word");
+        }
+        Some(FocusItem::PresetsToggle | FocusItem::AddParent) => {
+            candidates.push("Space Toggle");
+        }
+        _ => {}
+    }
+    candidates.extend([
+        "Tab Next",
+        "Enter Clone",
+        "Esc Cancel",
+        "Shift-Tab Prev",
+    ]);
+
+    let mut line = String::new();
+    for candidate in candidates {
+        let separator = if line.is_empty() { "" } else { " · " };
+        let needed = separator.chars().count() + candidate.chars().count();
+        if line.chars().count() + needed > width {
+            continue;
+        }
+        line.push_str(separator);
+        line.push_str(candidate);
+    }
+    if line.is_empty() {
+        trunc("Tab Next", width)
+    } else {
+        line
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -258,7 +364,13 @@ fn buttons_line(dialog: &ActionDialog, width: usize) -> Line<'static> {
             BtnKind::Primary,
         );
     }
-    if items.contains(&FocusItem::Cancel) {
+    let repository_source_dest = matches!(
+        &dialog.op,
+        Op::Clone { form, .. }
+            if form.kind == CloneKind::Repository
+                && form.stage == super::CloneStage::SourceDest
+    );
+    if items.contains(&FocusItem::Cancel) && !repository_source_dest {
         push("Cancel", focus == Some(FocusItem::Cancel), BtnKind::Primary);
     }
     if items.contains(&FocusItem::RequestCancel) {
@@ -275,7 +387,7 @@ fn buttons_line(dialog: &ActionDialog, width: usize) -> Line<'static> {
             BtnKind::Danger,
         );
     }
-    if items.contains(&FocusItem::Action) {
+    if items.contains(&FocusItem::Action) && !repository_source_dest {
         let kind = if let Op::Delete { form } = &dialog.op
             && matches!(
                 form.confirm,
@@ -478,12 +590,64 @@ fn form_lines(
     };
     let mut lines = Vec::new();
     if !directory {
-        lines.push(label_line(&format!("Source{lock}"), width, T.operator));
-        lines.push(fill(
-            field_spans(form.source.text(), dialog.cursor(), src_focus, false),
-            width,
-            T.bg,
-        ));
+        let ssh_focused =
+            !locked && dialog.item() == Some(FocusItem::ProtocolSsh);
+        let https_focused =
+            !locked && dialog.item() == Some(FocusItem::ProtocolHttps);
+        let ssh_style = Style::new()
+            .fg(
+                if form.protocol == crate::config::CloneProtocol::Ssh
+                    || ssh_focused
+                {
+                    T.accent
+                } else {
+                    T.fg
+                },
+            )
+            .add_modifier(if ssh_focused {
+                Modifier::BOLD
+            } else {
+                Modifier::empty()
+            });
+        let https_style = Style::new()
+            .fg(
+                if form.protocol == crate::config::CloneProtocol::Https
+                    || https_focused
+                {
+                    T.accent
+                } else {
+                    T.fg
+                },
+            )
+            .add_modifier(if https_focused {
+                Modifier::BOLD
+            } else {
+                Modifier::empty()
+            });
+        lines.push(Line::from(vec![
+            Span::styled("[ SSH ]", ssh_style),
+            Span::styled(" ", st(T.bg, T.bg)),
+            Span::styled("[ HTTPS ]", https_style),
+        ]));
+        let hint = "owner/repo";
+        let label = trunc(
+            "Repository path",
+            width.saturating_sub(hint.chars().count() + 1),
+        );
+        lines.push(Line::from(vec![
+            Span::styled(label, st(T.operator, T.bg)),
+            Span::raw(" "),
+            Span::styled(
+                trunc(
+                    hint,
+                    width.saturating_sub("Repository path ".chars().count()),
+                ),
+                st(T.comment, T.bg),
+            ),
+        ]));
+        let source_spans =
+            field_spans(form.source.text(), dialog.cursor(), src_focus, false);
+        lines.push(fill(source_spans, width, T.bg));
         lines.push(blank(width));
     }
     lines.push(label_line(&dest_label, width, T.operator));
@@ -504,6 +668,45 @@ fn form_lines(
             width,
             T.bg,
         ));
+    }
+    if !directory {
+        let focused =
+            !locked && dialog.item() == Some(FocusItem::PresetsToggle);
+        let label = if form.show_prefixes {
+            "[ Edit prefixes: hide ]"
+        } else {
+            "[ Edit prefixes: show ]"
+        };
+        lines.push(fill(
+            vec![Span::styled(
+                label,
+                Style::new()
+                    .fg(if focused { T.accent } else { T.operator })
+                    .bg(T.bg)
+                    .add_modifier(Modifier::BOLD),
+            )],
+            width,
+            T.bg,
+        ));
+        if form.show_prefixes {
+            for (name, item, field) in [
+                ("SSH  ", FocusItem::SshPrefix, &form.ssh_prefix),
+                ("HTTPS", FocusItem::HttpsPrefix, &form.https_prefix),
+            ] {
+                let focused = !locked && dialog.item() == Some(item);
+                let mut spans = vec![Span::styled(
+                    format!("{name} "),
+                    st(T.operator, T.bg),
+                )];
+                spans.extend(field_spans(
+                    field.text(),
+                    dialog.cursor(),
+                    focused,
+                    false,
+                ));
+                lines.push(fill(spans, width, T.bg));
+            }
+        }
     }
     if dialog.show_add_parent() {
         lines.push(blank(width));

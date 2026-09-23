@@ -1,8 +1,5 @@
 use super::field::Field;
-
-/// Source text prefilled into the picker's clone source field. The
-/// user completes it with a repository path (`owner/repo`).
-pub(crate) const DEFAULT_CLONE_SOURCE: &str = "https://github.com/";
+use crate::config::{CloneProtocol, CloneSettings};
 
 /// What the clone dialog does with a valid destination: run
 /// `git clone`, or create an empty directory. Both share the
@@ -75,6 +72,11 @@ impl DeleteStage {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FocusItem {
     Source,
+    ProtocolSsh,
+    ProtocolHttps,
+    SshPrefix,
+    HttpsPrefix,
+    PresetsToggle,
     Dest,
     AddParent,
     Prompt,
@@ -144,6 +146,10 @@ pub(crate) struct CloneForm {
     pub kind: CloneKind,
     pub stage: CloneStage,
     pub source: Field,
+    pub protocol: CloneProtocol,
+    pub ssh_prefix: Field,
+    pub https_prefix: Field,
+    pub show_prefixes: bool,
     pub dest: Field,
     pub dest_edited: bool,
     pub prompt: Field,
@@ -154,15 +160,23 @@ pub(crate) struct CloneForm {
 }
 
 impl CloneForm {
-    pub(crate) fn new(parent: Option<String>, kind: CloneKind) -> Self {
-        let mut source = Field::new();
-        if kind == CloneKind::Repository {
-            source.set_str(DEFAULT_CLONE_SOURCE);
-        }
+    pub(crate) fn new(
+        parent: Option<String>,
+        kind: CloneKind,
+        settings: CloneSettings,
+    ) -> Self {
+        let mut ssh_prefix = Field::new();
+        ssh_prefix.set_str(&settings.ssh_prefix);
+        let mut https_prefix = Field::new();
+        https_prefix.set_str(&settings.https_prefix);
         Self {
             kind,
             stage: CloneStage::SourceDest,
-            source,
+            source: Field::new(),
+            protocol: settings.default_protocol,
+            ssh_prefix,
+            https_prefix,
+            show_prefixes: false,
             dest: Field::new(),
             dest_edited: false,
             prompt: Field::new(),
@@ -171,6 +185,27 @@ impl CloneForm {
             running: false,
             auth: CloneAuth::None,
         }
+    }
+
+    pub(crate) fn prefix(&self) -> &str {
+        match self.protocol {
+            CloneProtocol::Ssh => self.ssh_prefix.text(),
+            CloneProtocol::Https => self.https_prefix.text(),
+        }
+    }
+
+    pub(crate) fn assembled_source(&self) -> String {
+        let prefix = self.prefix().trim();
+        let repo = self.source.text().trim().trim_start_matches('/');
+        let separator = if prefix.ends_with(':')
+            || prefix.ends_with('/')
+            || repo.is_empty()
+        {
+            ""
+        } else {
+            "/"
+        };
+        format!("{prefix}{separator}{repo}")
     }
 
     pub(crate) fn git_started(&self) -> bool {

@@ -195,11 +195,15 @@ impl Tui {
 
     fn open_clone_dialog(&mut self) {
         let parent = self.picker.clone_dest_parent();
-        let mut dialog = ActionDialog::open_clone(
+        let mut dialog = ActionDialog::open_clone_with_settings(
             parent,
             FsCloneProbe {
                 config: self.config.clone(),
             },
+            self.config
+                .as_ref()
+                .map(|cfg| cfg.clone.clone())
+                .unwrap_or_default(),
         );
         dialog.set_transport(Box::new(PortablePty));
         if let Some(cfg) = &self.config {
@@ -502,6 +506,9 @@ impl Tui {
                 typing: dialog.typing(),
                 inspect_enabled: dialog.inspect_enabled(),
                 add_parent_focused: dialog.add_parent_focused(),
+                selection_focused: dialog.selection_focused(),
+                presets_toggle_focused: dialog.item()
+                    == Some(FocusItem::PresetsToggle),
                 refresh_pending: self.refresh_in_flight,
             });
         }

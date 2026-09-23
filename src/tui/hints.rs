@@ -76,6 +76,8 @@ pub(crate) struct DialogHintState {
     pub typing: bool,
     pub inspect_enabled: bool,
     pub add_parent_focused: bool,
+    pub selection_focused: bool,
+    pub presets_toggle_focused: bool,
     /// A catalog refresh is still in flight: Escape and
     /// Acknowledge wait for it, so the bar never advertises a
     /// cancel that would drop the pending picker update.
@@ -93,6 +95,8 @@ impl Default for DialogHintState {
             typing: false,
             inspect_enabled: false,
             add_parent_focused: false,
+            selection_focused: false,
+            presets_toggle_focused: false,
             refresh_pending: false,
         }
     }
@@ -339,11 +343,7 @@ fn dialog_hints(dialog: DialogHintState) -> Vec<HintChip> {
     }
     if !dialog.typing {
         chips.push(on("[/] Stage"));
-        let inspect = if dialog.add_parent_focused {
-            "i Inspect"
-        } else {
-            "i/Space Inspect"
-        };
+        let inspect = "i Inspect";
         if dialog.inspect_enabled {
             chips.push(on(inspect));
         } else {
@@ -351,6 +351,12 @@ fn dialog_hints(dialog: DialogHintState) -> Vec<HintChip> {
         }
         if dialog.add_parent_focused {
             chips.push(on("Space Toggle"));
+        } else if dialog.selection_focused {
+            chips.push(on(if dialog.presets_toggle_focused {
+                "Space Toggle"
+            } else {
+                "←/→/h/l Select"
+            }));
         }
     }
     chips.push(on("Ctrl-C Quit"));

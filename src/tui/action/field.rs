@@ -37,6 +37,23 @@ impl Field {
         self.cursor = i;
     }
 
+    pub(crate) fn delete_previous_word(&mut self) {
+        let mut chars: Vec<char> = self.text.chars().collect();
+        let cursor = self.cursor.min(chars.len());
+        let mut start = cursor;
+        while start > 0 && chars[start - 1].is_whitespace() {
+            start -= 1;
+        }
+        while start > 0 && !chars[start - 1].is_whitespace() {
+            start -= 1;
+        }
+        if start != cursor {
+            chars.drain(start..cursor);
+            self.text = chars.into_iter().collect();
+            self.cursor = start;
+        }
+    }
+
     pub(crate) fn delete(&mut self) {
         let mut chars: Vec<char> = self.text.chars().collect();
         if self.cursor >= chars.len() {

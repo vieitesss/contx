@@ -20,6 +20,7 @@ use ratatui::crossterm::event::{
 };
 
 use crate::clone;
+use crate::config::{CloneProtocol, CloneSettings};
 
 use crate::delete::{DeleteClass, DeleteStrategy, FetchResult};
 use clone_flow::CloneJob;
@@ -52,6 +53,34 @@ pub(crate) const GRACE_FOR: Duration = Duration::from_millis(900);
 /// hint clears once the refresh settles.
 pub(crate) const REFRESH_PENDING_HINT: &str = "waiting for refresh to finish";
 
+fn valid_repository_path(source: &str) -> bool {
+    let source = source.trim();
+    if source.is_empty() || source.contains("://") {
+        return false;
+    }
+    let first = source.split('/').next().unwrap_or_default();
+    if first.eq_ignore_ascii_case("github.com")
+        || first
+            .split_once('@')
+            .is_some_and(|(_, host)| host.contains('.'))
+        || source
+            .split_once(':')
+            .is_some_and(|(host, _)| host.contains('@'))
+    {
+        return false;
+    }
+    let path = source.strip_prefix('/').unwrap_or(source);
+    if path.starts_with('/') {
+        return false;
+    }
+    let path = path.trim_end_matches('/');
+    let components: Vec<_> = path.split('/').collect();
+    components.len() >= 2
+        && components
+            .iter()
+            .all(|component| !component.trim().is_empty())
+}
+
 /// Probe used for inline clone destination validation. Later nodes
 /// supply filesystem/config implementations; tests inject scripts.
 pub(crate) trait CloneDestProbe {
@@ -77,6 +106,7 @@ pub(crate) struct ActionDialog {
     selected_stage: usize,
     inspect: Option<usize>,
     view_scroll: usize,
+    focus_scroll: bool,
     generation: u64,
     hint: String,
     outcome: Option<DialogOutcome>,
@@ -104,9 +134,17 @@ impl ActionDialog {
         parent: Option<String>,
         probe: impl CloneDestProbe + 'static,
     ) -> Self {
+        Self::open_clone_with_settings(parent, probe, CloneSettings::default())
+    }
+
+    pub(crate) fn open_clone_with_settings(
+        parent: Option<String>,
+        probe: impl CloneDestProbe + 'static,
+        settings: CloneSettings,
+    ) -> Self {
         Self::open(
             Op::Clone {
-                form: CloneForm::new(parent, CloneKind::Repository),
+                form: CloneForm::new(parent, CloneKind::Repository, settings),
                 probe: Box::new(probe),
             },
             FocusItem::Source,
@@ -121,7 +159,11 @@ impl ActionDialog {
     ) -> Self {
         Self::open(
             Op::Clone {
-                form: CloneForm::new(parent, CloneKind::Directory),
+                form: CloneForm::new(
+                    parent,
+                    CloneKind::Directory,
+                    CloneSettings::default(),
+                ),
                 probe: Box::new(probe),
             },
             FocusItem::Dest,
@@ -146,6 +188,7 @@ impl ActionDialog {
             selected_stage: 0,
             inspect: None,
             view_scroll: 0,
+            focus_scroll: true,
             generation: 1,
             hint: String::new(),
             outcome: None,
@@ -399,7 +442,7 @@ impl ActionDialog {
                                 });
                             format!(
                                 "{} → {}",
-                                trunc_summary(form.source.text(), 18),
+                                trunc_summary(&form.assembled_source(), 18),
                                 dest
                             )
                         }
@@ -542,7 +585,14 @@ impl ActionDialog {
         }
     }
 
-    pub(crate) fn source(&self) -> &str {
+    pub(crate) fn source(&self) -> String {
+        match &self.op {
+            Op::Clone { form, .. } => form.assembled_source(),
+            Op::Delete { .. } => String::new(),
+        }
+    }
+
+    pub(crate) fn repository_path(&self) -> &str {
         match &self.op {
             Op::Clone { form, .. } => form.source.text(),
             Op::Delete { .. } => "",
@@ -610,16 +660,33 @@ impl ActionDialog {
             Op::Clone { form, .. } => match form.stage {
                 CloneStage::SourceDest => {
                     let mut v = match form.kind {
-                        CloneKind::Repository => {
-                            vec![FocusItem::Source, FocusItem::Dest]
-                        }
+                        CloneKind::Repository => vec![
+                            match form.protocol {
+                                CloneProtocol::Ssh => FocusItem::ProtocolSsh,
+                                CloneProtocol::Https => {
+                                    FocusItem::ProtocolHttps
+                                }
+                            },
+                            FocusItem::Source,
+                            FocusItem::Dest,
+                            FocusItem::PresetsToggle,
+                        ],
                         CloneKind::Directory => vec![FocusItem::Dest],
                     };
+                    if form.kind == CloneKind::Repository && form.show_prefixes
+                    {
+                        v.extend([
+                            FocusItem::SshPrefix,
+                            FocusItem::HttpsPrefix,
+                        ]);
+                    }
                     if self.show_add_parent() {
                         v.push(FocusItem::AddParent);
                     }
-                    v.push(FocusItem::Cancel);
-                    v.push(FocusItem::Action);
+                    if form.kind == CloneKind::Directory {
+                        v.push(FocusItem::Cancel);
+                        v.push(FocusItem::Action);
+                    }
                     v
                 }
                 CloneStage::Result => vec![FocusItem::Ack],
@@ -672,14 +739,31 @@ impl ActionDialog {
         self.item() == Some(FocusItem::AddParent)
     }
 
+    pub(crate) fn selection_focused(&self) -> bool {
+        matches!(
+            self.item(),
+            Some(
+                FocusItem::ProtocolSsh
+                    | FocusItem::ProtocolHttps
+                    | FocusItem::PresetsToggle
+            )
+        )
+    }
+
     pub(crate) fn clone_validation_error(&self) -> Option<String> {
         let Op::Clone { form, probe } = &self.op else {
             return None;
         };
-        if form.kind == CloneKind::Repository
-            && form.source.text().trim().is_empty()
-        {
-            return Some("source is required".into());
+        if form.kind == CloneKind::Repository {
+            if form.source.text().trim().is_empty() {
+                return Some("repository path is required".into());
+            }
+            if !valid_repository_path(form.source.text()) {
+                return Some("repository path must include owner/repo".into());
+            }
+            if form.prefix().trim().is_empty() {
+                return Some("selected prefix is required".into());
+            }
         }
         if form.dest.text().trim().is_empty() {
             return Some("destination is required".into());
@@ -701,14 +785,20 @@ impl ActionDialog {
             return None;
         }
         let typing = self.typing();
+        if self.forwards_keys() && is_pty_input(&key) {
+            self.forward_key(&key);
+            return None;
+        }
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             if matches!(key.code, KeyCode::Char('g') | KeyCode::Char('G')) {
                 self.request_cancel();
+            } else if typing && key.code == KeyCode::Char('w') {
+                let item = self.item();
+                if let Some(field) = self.active_field_mut() {
+                    field.delete_previous_word();
+                }
+                self.after_clone_field_edit(item);
             }
-            return None;
-        }
-        if self.forwards_keys() && is_pty_input(&key) {
-            self.forward_key(&key);
             return None;
         }
         match key.code {
@@ -740,6 +830,18 @@ impl ActionDialog {
                 if let Some(field) = self.active_field_mut() {
                     field.move_right();
                 }
+                None
+            }
+            KeyCode::Left | KeyCode::Char('h')
+                if !typing && self.is_protocol_focused() =>
+            {
+                self.focus_protocol(FocusItem::ProtocolSsh);
+                None
+            }
+            KeyCode::Right | KeyCode::Char('l')
+                if !typing && self.is_protocol_focused() =>
+            {
+                self.focus_protocol(FocusItem::ProtocolHttps);
                 None
             }
             KeyCode::Home if typing => {
@@ -783,6 +885,12 @@ impl ActionDialog {
                 None
             }
             KeyCode::Char(' ')
+                if !typing && self.item() == Some(FocusItem::PresetsToggle) =>
+            {
+                self.toggle_prefixes();
+                None
+            }
+            KeyCode::Char(' ')
                 if !typing && self.item() == Some(FocusItem::AddParent) =>
             {
                 self.toggle_add_parent();
@@ -811,12 +919,15 @@ impl ActionDialog {
         match item {
             Some(FocusItem::Dest) => form.dest_edited = true,
             Some(FocusItem::Source) if !form.dest_edited => {
-                let text =
+                let text = if valid_repository_path(form.source.text()) {
                     match clone::default_clone_dest_name(form.source.text()) {
                         Some(name) if form.parent.is_some() => name.to_string(),
                         Some(name) => format!("~/{name}"),
                         None => String::new(),
-                    };
+                    }
+                } else {
+                    String::new()
+                };
                 form.dest.set_str(&text);
             }
             _ => {}
@@ -983,6 +1094,11 @@ impl ActionDialog {
         match key.code {
             KeyCode::Enter => self.pty_write(b"\n"),
             KeyCode::Backspace => self.pty_write(b"\x7f"),
+            KeyCode::Char('w')
+                if key.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                self.pty_write(b"\x17")
+            }
             KeyCode::Char(c) if !c.is_control() => {
                 let mut buf = [0; 4];
                 self.pty_write(c.encode_utf8(&mut buf).as_bytes());
@@ -1026,7 +1142,7 @@ impl ActionDialog {
         let Op::Clone { form, .. } = &self.op else {
             return;
         };
-        let source = form.source.text().trim().to_string();
+        let source = form.assembled_source();
         let add_parent = form.add_parent;
         let Ok(dest) = self.abs_dest() else {
             return;
@@ -1592,6 +1708,8 @@ impl ActionDialog {
             self.item(),
             Some(
                 FocusItem::Source
+                    | FocusItem::SshPrefix
+                    | FocusItem::HttpsPrefix
                     | FocusItem::Dest
                     | FocusItem::Prompt
                     | FocusItem::PermPath
@@ -1625,6 +1743,12 @@ impl ActionDialog {
             (Op::Clone { form, .. }, Some(FocusItem::Source)) => {
                 Some(&form.source)
             }
+            (Op::Clone { form, .. }, Some(FocusItem::SshPrefix)) => {
+                Some(&form.ssh_prefix)
+            }
+            (Op::Clone { form, .. }, Some(FocusItem::HttpsPrefix)) => {
+                Some(&form.https_prefix)
+            }
             (Op::Clone { form, .. }, Some(FocusItem::Dest)) => Some(&form.dest),
             (Op::Clone { form, .. }, Some(FocusItem::Prompt)) => {
                 Some(&form.prompt)
@@ -1645,6 +1769,12 @@ impl ActionDialog {
             (Op::Clone { form, .. }, Some(FocusItem::Source)) => {
                 Some(&mut form.source)
             }
+            (Op::Clone { form, .. }, Some(FocusItem::SshPrefix)) => {
+                Some(&mut form.ssh_prefix)
+            }
+            (Op::Clone { form, .. }, Some(FocusItem::HttpsPrefix)) => {
+                Some(&mut form.https_prefix)
+            }
             (Op::Clone { form, .. }, Some(FocusItem::Dest)) => {
                 Some(&mut form.dest)
             }
@@ -1662,6 +1792,11 @@ impl ActionDialog {
     }
 
     fn focus_item(&mut self, want: FocusItem) {
+        if matches!(want, FocusItem::ProtocolSsh | FocusItem::ProtocolHttps) {
+            self.focus_protocol(want);
+            return;
+        }
+        self.focus_scroll = true;
         if let Some(i) = self.items().iter().position(|x| *x == want) {
             self.focus = i;
             if let Some(field) = self.active_field_mut() {
@@ -1685,21 +1820,95 @@ impl ActionDialog {
     }
 
     fn tab(&mut self, back: bool) {
-        let n = self.items().len();
+        self.focus_scroll = true;
+        let items = self.items();
+        let n = items.len();
         if n == 0 {
             return;
         }
-        if back {
+        let is_protocol = self.is_protocol_focused();
+        if is_protocol {
+            self.focus = if back { n - 1 } else { (self.focus + 1) % n };
+        } else if back
+            && self.item() == Some(FocusItem::Source)
+            && matches!(
+                &self.op,
+                Op::Clone { form, .. }
+                    if form.kind == CloneKind::Repository
+                        && form.stage == CloneStage::SourceDest
+            )
+        {
+            let selected = match &self.op {
+                Op::Clone { form, .. }
+                    if form.protocol == CloneProtocol::Https =>
+                {
+                    FocusItem::ProtocolHttps
+                }
+                _ => FocusItem::ProtocolSsh,
+            };
+            self.focus =
+                items.iter().position(|item| *item == selected).unwrap_or(0);
+        } else if back {
             self.focus = if self.focus == 0 {
                 n - 1
             } else {
                 self.focus - 1
             };
+        } else if !back && self.focus == n - 1 {
+            let selected = match &self.op {
+                Op::Clone { form, .. }
+                    if form.kind == CloneKind::Repository
+                        && form.stage == CloneStage::SourceDest
+                        && form.protocol == CloneProtocol::Https =>
+                {
+                    FocusItem::ProtocolHttps
+                }
+                Op::Clone { form, .. }
+                    if form.kind == CloneKind::Repository
+                        && form.stage == CloneStage::SourceDest =>
+                {
+                    FocusItem::ProtocolSsh
+                }
+                _ => items[0],
+            };
+            self.focus =
+                items.iter().position(|item| *item == selected).unwrap_or(0);
         } else {
             self.focus = (self.focus + 1) % n;
         }
         if let Some(field) = self.active_field_mut() {
             field.end();
+        }
+    }
+
+    fn is_protocol_focused(&self) -> bool {
+        matches!(
+            self.item(),
+            Some(FocusItem::ProtocolSsh | FocusItem::ProtocolHttps)
+        )
+    }
+
+    fn focus_protocol(&mut self, item: FocusItem) {
+        if let Op::Clone { form, .. } = &mut self.op {
+            form.protocol = match item {
+                FocusItem::ProtocolSsh => CloneProtocol::Ssh,
+                FocusItem::ProtocolHttps => CloneProtocol::Https,
+                _ => return,
+            };
+        }
+        if let Some(index) =
+            self.items().iter().position(|candidate| *candidate == item)
+        {
+            self.focus = index;
+            self.focus_scroll = true;
+        }
+    }
+
+    fn toggle_prefixes(&mut self) {
+        if let Op::Clone { form, .. } = &mut self.op
+            && !form.git_started()
+        {
+            form.show_prefixes = !form.show_prefixes;
         }
     }
 
@@ -1738,6 +1947,7 @@ impl ActionDialog {
     }
 
     fn scroll(&mut self, down: bool) {
+        self.focus_scroll = false;
         if down {
             self.view_scroll = self.view_scroll.saturating_add(1);
         } else {
@@ -1746,11 +1956,24 @@ impl ActionDialog {
     }
 
     fn enter(&mut self) -> Option<DialogOutcome> {
+        if matches!(
+            &self.op,
+            Op::Clone { form, .. }
+                if form.kind == CloneKind::Repository
+                    && form.stage == CloneStage::SourceDest
+        ) {
+            return self.advance();
+        }
         match self.item() {
+            Some(FocusItem::PresetsToggle) => {
+                self.toggle_prefixes();
+                None
+            }
             Some(FocusItem::AddParent) => {
                 self.toggle_add_parent();
                 None
             }
+            Some(FocusItem::ProtocolSsh | FocusItem::ProtocolHttps) => None,
             Some(FocusItem::Cancel) => self.escape(),
             Some(FocusItem::Ack) => self.acknowledge(),
             Some(FocusItem::RequestCancel) => {
@@ -1772,6 +1995,8 @@ impl ActionDialog {
                 None
             }
             Some(FocusItem::Action)
+            | Some(FocusItem::SshPrefix)
+            | Some(FocusItem::HttpsPrefix)
             | Some(FocusItem::Source)
             | Some(FocusItem::Dest)
             | Some(FocusItem::Prompt)
@@ -1884,6 +2109,9 @@ impl ActionDialog {
 }
 
 fn is_pty_input(key: &KeyEvent) -> bool {
+    if key.modifiers.contains(KeyModifiers::CONTROL) {
+        return key.code == KeyCode::Char('w');
+    }
     match key.code {
         KeyCode::Enter | KeyCode::Backspace | KeyCode::Delete => true,
         KeyCode::Char(c) if !c.is_control() => {
