@@ -34,7 +34,7 @@ pub(crate) fn project_target_label(
         let grandparent = parent_path.parent().ok_or_else(invalid)?;
         if grandparent
             .strip_prefix(&home)
-            .is_ok_and(|res| res.is_empty())
+            .is_ok_and(|res| res.as_os_str().is_empty())
         {
             let user = env("USER")
                 .ok_or_else(invalid)?
