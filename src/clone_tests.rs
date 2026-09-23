@@ -26,6 +26,7 @@ fn test_config(config_path: &Path, paths: &[&str]) -> ResolvedConfig {
         multiplexer: Multiplexer::Auto,
         command: Command::Picker,
         permanent_delete: false,
+        clone: crate::config::CloneSettings::default(),
         config_path: config_path.display().to_string(),
         paths: paths.iter().map(|s| s.to_string()).collect(),
         git_from_home: false,

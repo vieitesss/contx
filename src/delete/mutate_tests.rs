@@ -28,6 +28,7 @@ fn cfg(candidates: Vec<SessionCandidate>) -> ResolvedConfig {
         multiplexer: Multiplexer::Auto,
         command: Command::Picker,
         permanent_delete: false,
+        clone: crate::config::CloneSettings::default(),
         config_path: "/tmp/contx-test.toml".into(),
         paths: vec![],
         git_from_home: false,

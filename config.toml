@@ -29,3 +29,9 @@ paths = [
 
 # Whether to show the git repositories that exist
 git-from-home = true
+
+# Picker clone presets (CLI clone source stays explicit).
+[clone]
+default-protocol = "ssh" # ssh | https
+ssh-prefix = "git@github.com:"
+https-prefix = "https://github.com"

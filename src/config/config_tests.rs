@@ -58,6 +58,32 @@ fn no_candidates() -> Vec<String> {
 }
 
 #[test]
+fn clone_settings_default_to_ssh_and_known_github_prefixes() {
+    let home = TempDir::new();
+    let resolved = resolve_ready(&[], &home_env(home.path())).unwrap();
+    assert_eq!(resolved.clone.default_protocol, super::CloneProtocol::Ssh);
+    assert_eq!(resolved.clone.ssh_prefix, "git@github.com:");
+    assert_eq!(resolved.clone.https_prefix, "https://github.com");
+}
+
+#[test]
+fn clone_settings_accept_partial_toml_overrides_and_reject_unknown_protocol() {
+    let home = TempDir::new();
+    let file = home.file("clone.toml", "[clone]\ndefault-protocol = 'https'\nhttps-prefix = 'https://git.example/teams'\n");
+    let resolved = resolve_ready(&["-c", file.to_str().unwrap()], &[]).unwrap();
+    assert_eq!(resolved.clone.default_protocol, super::CloneProtocol::Https);
+    assert_eq!(resolved.clone.https_prefix, "https://git.example/teams");
+    assert_eq!(resolved.clone.ssh_prefix, "git@github.com:");
+
+    let invalid =
+        home.file("invalid.toml", "[clone]\ndefault-protocol = 'ftp'\n");
+    assert!(matches!(
+        resolve_ready(&["-c", invalid.to_str().unwrap()], &[]),
+        Err(ConfigError::IncorrectStructure(_))
+    ));
+}
+
+#[test]
 fn missing_implicit_config_file_starts_with_no_candidates() {
     let d = TempDir::new();
 

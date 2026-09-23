@@ -51,6 +51,33 @@ impl Multiplexer {
     }
 }
 
+/// Picker clone presets. They affect only the interactive dialog, not CLI clone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum CloneProtocol {
+    #[default]
+    Ssh,
+    Https,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(default, rename_all = "kebab-case")]
+pub struct CloneSettings {
+    pub default_protocol: CloneProtocol,
+    pub ssh_prefix: String,
+    pub https_prefix: String,
+}
+
+impl Default for CloneSettings {
+    fn default() -> Self {
+        Self {
+            default_protocol: CloneProtocol::Ssh,
+            ssh_prefix: "git@github.com:".into(),
+            https_prefix: "https://github.com".into(),
+        }
+    }
+}
+
 /// What this invocation should do after configuration is loaded.
 /// Clone and delete never open the picker.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -79,6 +106,7 @@ pub struct ResolvedConfig {
     /// Ordinary-directory / standalone-repo / symlink deletion strategy.
     /// Linked worktrees always use Git. Default false (trash).
     pub permanent_delete: bool,
+    pub clone: CloneSettings,
     /// Expanded path of the active config file, even when the implicit
     /// file is missing and will be created on a later write.
     pub config_path: String,
@@ -121,6 +149,7 @@ struct Loaded {
     candidates: Vec<SessionCandidate>,
     multiplexer: Multiplexer,
     permanent_delete: bool,
+    clone: CloneSettings,
     config_path: String,
     paths: Vec<String>,
     git_from_home: bool,
@@ -168,6 +197,7 @@ struct RawConfig {
     multiplexer: Option<Multiplexer>,
     #[serde(rename = "permanent-delete")]
     permanent_delete: Option<bool>,
+    clone: Option<CloneSettings>,
 }
 
 /// Resolve startup from process-global argv and environment; the
@@ -195,6 +225,7 @@ pub(crate) fn resolve_with(
         multiplexer: cli.multiplexer.unwrap_or(loaded.multiplexer),
         command: cli.command,
         permanent_delete: loaded.permanent_delete,
+        clone: loaded.clone,
         config_path: loaded.config_path,
         paths: loaded.paths,
         git_from_home: loaded.git_from_home,
@@ -365,6 +396,7 @@ fn load_candidates(
                     candidates: vec![],
                     multiplexer: Multiplexer::Auto,
                     permanent_delete: false,
+                    clone: CloneSettings::default(),
                     config_path: path,
                     paths: vec![],
                     git_from_home: false,
@@ -391,6 +423,7 @@ fn load_candidates(
         candidates: merge_paths(configured, discovered),
         multiplexer: raw.multiplexer.unwrap_or_default(),
         permanent_delete: raw.permanent_delete.unwrap_or(false),
+        clone: raw.clone.unwrap_or_default(),
         config_path: path,
         paths: raw_paths,
         git_from_home,
