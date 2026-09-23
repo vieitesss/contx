@@ -249,7 +249,7 @@ fn form_with_two_or_more_items_shows_tab_and_shift_tab() {
             on("Shift-Tab Prev"),
             on("Esc Cancel"),
             on("[/] Stage"),
-            off("i/Space Inspect"),
+            off("i Inspect"),
             on("Ctrl-C Quit"),
         ]
     );
@@ -275,7 +275,7 @@ fn running_idle_shows_ctrl_g_cancel_not_esc_or_last() {
         vec![
             on("Ctrl-G Cancel"),
             on("[/] Stage"),
-            off("i/Space Inspect"),
+            off("i Inspect"),
             on("Ctrl-C Quit"),
         ]
     );
@@ -291,7 +291,7 @@ fn running_with_auth_fields_still_shows_tab() {
             on("Shift-Tab Prev"),
             on("Ctrl-G Cancel"),
             on("[/] Stage"),
-            off("i/Space Inspect"),
+            off("i Inspect"),
             on("Ctrl-C Quit"),
         ]
     );
@@ -302,7 +302,7 @@ fn grace_omits_ctrl_g_esc_and_tab() {
     let chips = dialog(running(CancelState::Grace, 0));
     assert_eq!(
         chips,
-        vec![on("[/] Stage"), off("i/Space Inspect"), on("Ctrl-C Quit"),]
+        vec![on("[/] Stage"), off("i Inspect"), on("Ctrl-C Quit"),]
     );
 }
 
@@ -311,7 +311,7 @@ fn force_ready_omits_ignored_keys() {
     let chips = dialog(running(CancelState::ForceReady, 1));
     assert_eq!(
         chips,
-        vec![on("[/] Stage"), off("i/Space Inspect"), on("Ctrl-C Quit"),]
+        vec![on("[/] Stage"), off("i Inspect"), on("Ctrl-C Quit"),]
     );
 }
 
@@ -338,7 +338,7 @@ fn sticky_omits_esc_and_tab() {
     });
     assert_eq!(
         chips,
-        vec![on("[/] Stage"), off("i/Space Inspect"), on("Ctrl-C Quit"),]
+        vec![on("[/] Stage"), off("i Inspect"), on("Ctrl-C Quit"),]
     );
 }
 
@@ -351,7 +351,7 @@ fn awaiting_config_and_mutate_omit_esc_cancel() {
         });
         assert_eq!(
             chips,
-            vec![on("[/] Stage"), off("i/Space Inspect"), on("Ctrl-C Quit"),],
+            vec![on("[/] Stage"), off("i Inspect"), on("Ctrl-C Quit"),],
             "{awaiting:?}"
         );
     }
@@ -368,7 +368,7 @@ fn awaiting_inspect_esc_still_cancels() {
         vec![
             on("Esc Cancel"),
             on("[/] Stage"),
-            off("i/Space Inspect"),
+            off("i Inspect"),
             on("Ctrl-C Quit"),
         ]
     );
@@ -401,7 +401,7 @@ fn inspect_enabled_uses_space_alias_unless_add_parent_focused() {
         inspect_enabled: true,
         ..DialogHintState::default()
     });
-    assert!(open.contains(&on("i/Space Inspect")), "{open:?}");
+    assert!(open.contains(&on("i Inspect")), "{open:?}");
     let parent = dialog(DialogHintState {
         item_count: 2,
         inspect_enabled: true,
@@ -420,6 +420,31 @@ fn inspect_enabled_uses_space_alias_unless_add_parent_focused() {
             on("Ctrl-C Quit"),
         ]
     );
+}
+
+#[test]
+fn focused_selection_and_toggle_have_accurate_hints() {
+    let focused = dialog(DialogHintState {
+        inspect_enabled: true,
+        selection_focused: true,
+        presets_toggle_focused: true,
+        ..DialogHintState::default()
+    });
+    assert!(focused.contains(&on("i Inspect")), "{focused:?}");
+    assert!(focused.contains(&on("Space Toggle")), "{focused:?}");
+    assert!(
+        !labels(&focused)
+            .iter()
+            .any(|label| label.contains("i/Space"))
+    );
+
+    let toggle = dialog(DialogHintState {
+        inspect_enabled: true,
+        add_parent_focused: true,
+        ..DialogHintState::default()
+    });
+    assert!(toggle.contains(&on("i Inspect")), "{toggle:?}");
+    assert!(toggle.contains(&on("Space Toggle")), "{toggle:?}");
 }
 
 #[test]

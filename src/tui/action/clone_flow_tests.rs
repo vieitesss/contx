@@ -77,12 +77,40 @@ fn dest_exists_is_exported() {
 
 #[test]
 fn invalid_clone_does_not_spawn() {
-    let mut d = dialog();
-    let fake = FakePty::new();
-    d.set_transport(Box::new(fake.clone()));
-    d.handle_key(key(KeyCode::Enter));
-    assert!(fake.spawns().is_empty());
-    assert!(!d.git_started());
+    for source in [
+        "abc",
+        "git@github.com:owner/repo",
+        "git@github.com/owner/repo",
+        "github.com/owner/repo",
+    ] {
+        let mut d = dialog();
+        let fake = FakePty::new();
+        d.set_transport(Box::new(fake.clone()));
+        type_text(&mut d, source);
+        d.focus_item(FocusItem::ProtocolSsh);
+        d.handle_key(key(KeyCode::Enter));
+        assert!(fake.spawns().is_empty(), "source {source:?}");
+        assert_eq!(
+            d.clone_validation_error().as_deref(),
+            Some("repository path must include owner/repo"),
+            "source {source:?}"
+        );
+        assert!(!d.git_started(), "source {source:?}");
+    }
+}
+
+#[test]
+fn enter_from_protocol_or_option_control_starts_valid_clone() {
+    for focused in [FocusItem::ProtocolSsh, FocusItem::PresetsToggle] {
+        let mut d = dialog();
+        let fake = FakePty::new();
+        d.set_transport(Box::new(fake.clone()));
+        fill_valid(&mut d);
+        d.focus_item(focused);
+        d.handle_key(key(KeyCode::Enter));
+        assert_eq!(fake.spawns().len(), 1, "focused {focused:?}");
+        assert!(d.git_started(), "focused {focused:?}");
+    }
 }
 
 #[test]
@@ -94,7 +122,7 @@ fn valid_clone_spawns_git_clone_and_freezes() {
             vec![
                 "git".into(),
                 "clone".into(),
-                "https://github.com/acme/repo.git".into(),
+                "git@github.com:acme/repo.git".into(),
                 "/work/repo".into(),
             ],
             PtySize { cols: 80, rows: 24 }
@@ -153,9 +181,15 @@ fn unknown_output_forwards_keys() {
     ));
     d.pump();
     d.handle_key(key(KeyCode::Char('x')));
+    d.handle_key(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL));
     assert!(
         fake.writes().iter().any(|w| w == b"x"),
         "writes: {:?}",
+        fake.writes()
+    );
+    assert!(
+        fake.writes().iter().any(|w| w == b"\x17"),
+        "Ctrl-W was not forwarded: {:?}",
         fake.writes()
     );
 }
@@ -185,14 +219,12 @@ fn git_success_config_failure_is_partial_sticky_and_still_refreshes() {
     d.set_transport(Box::new(fake.clone()));
     d.set_config_append(Box::new(cfg.clone()));
     fill_valid(&mut d);
-    d.handle_key(key(KeyCode::Tab));
-    d.handle_key(key(KeyCode::Tab));
+    for _ in 0..3 {
+        d.handle_key(key(KeyCode::Tab));
+    }
     assert_eq!(d.item(), Some(FocusItem::AddParent));
-    d.handle_key(key(KeyCode::Enter));
+    d.handle_key(key(KeyCode::Char(' ')));
     assert!(d.add_parent());
-    d.handle_key(key(KeyCode::Tab));
-    d.handle_key(key(KeyCode::Tab));
-    assert_eq!(d.item(), Some(FocusItem::Action));
     d.handle_key(key(KeyCode::Enter));
     fake.inject(PtyEvent::Exit { code: Some(0) });
     assert_eq!(d.pump(), None);

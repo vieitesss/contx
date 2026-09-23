@@ -121,7 +121,7 @@ fn escape_waits_for_pending_refresh_and_keeps_catalog() {
     tui.handle_key(key(KeyCode::Char('c')));
     let fake = FakePty::new();
     tui.set_dialog_transport(fake.clone());
-    for c in "git@example.com:acme/repo.git".chars() {
+    for c in "acme/repo.git".chars() {
         tui.handle_key(key(KeyCode::Char(c)));
     }
     assert_eq!(tui.dialog.as_ref().unwrap().dest(), "repo");
@@ -562,7 +562,7 @@ fn hint_bar_inspect_enables_after_completed_stage_selected() {
     let t = Theme::LIGHT;
     let buf = paint(&mut tui, 80, 24);
     let row = row_text(&buf, 23, 80);
-    assert!(row.contains("i/Space Inspect"), "{row}");
+    assert!(row.contains("i Inspect"), "{row}");
     let ix = hint_x(&row, "Inspect");
     assert_eq!(buf[(ix, 23)].fg, t.comment, "{row}");
 
@@ -746,6 +746,7 @@ fn tui_for_repo(repo: &Path) -> Tui {
         multiplexer: Multiplexer::Auto,
         command: Command::Picker,
         permanent_delete: false,
+        clone: crate::config::CloneSettings::default(),
         config_path: "/tmp/contx-test.toml".into(),
         paths: vec![],
         git_from_home: false,

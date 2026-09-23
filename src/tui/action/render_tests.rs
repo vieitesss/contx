@@ -67,6 +67,14 @@ fn buf_text(buf: &Buffer) -> String {
         .join("\n")
 }
 
+fn modal_hint(dialog: &ActionDialog, w: u16, h: u16) -> String {
+    let buf = paint(dialog, w, h);
+    let row = modal_rect(Rect::new(0, 0, w, h)).y
+        + modal_rect(Rect::new(0, 0, w, h)).height
+        - 3;
+    row_text(&buf, row).trim().to_string()
+}
+
 fn type_text(dialog: &mut ActionDialog, s: &str) {
     for c in s.chars() {
         dialog.handle_key(key(KeyCode::Char(c)));
@@ -97,16 +105,254 @@ fn clone_form_double_border_title_waiting_and_invalid_clone() {
     let text = buf_text(&buf);
     assert!(text.contains("Clone"), "title: {text}");
     assert!(text.contains("Source & destination"), "{text}");
+    assert!(text.contains("SSH"), "{text}");
+    assert!(text.contains("Repository path"), "{text}");
     assert!(text.contains("Authenticate"), "{text}");
     assert!(text.contains("waiting"), "{text}");
-    assert!(text.contains("[Cancel]"), "{text}");
-    assert!(text.contains("Clone (invalid)"), "{text}");
+    assert!(text.contains("owner/repo"), "repository path hint: {text}");
+    assert!(!text.contains("org/repo"), "old placeholder: {text}");
+    let rows: Vec<_> = text.lines().collect();
+    let label_row = rows
+        .iter()
+        .position(|row| row.contains("Repository path"))
+        .unwrap();
+    assert!(
+        rows[label_row].contains("owner/repo"),
+        "hint shares label row: {text}"
+    );
+    assert!(
+        !rows[label_row + 1].contains("owner/repo"),
+        "input row is empty: {text}"
+    );
+    assert!(text.contains("repository path is required"), "{text}");
+    assert!(!text.contains("[Cancel]"), "{text}");
+    assert!(!text.contains("[Clone (invalid)]"), "{text}");
+    assert!(dialog.items().iter().all(|item| !matches!(
+        item,
+        crate::tui::action::FocusItem::Cancel
+            | crate::tui::action::FocusItem::Action
+    )));
     // Double border uses ╔ on the title row.
     let top = row_text(&buf, modal_rect(Rect::new(0, 0, 80, 24)).y);
     assert!(
         top.contains('╔') || top.contains('═'),
         "double border: {top}"
     );
+}
+
+#[test]
+fn source_destination_hint_tracks_the_focused_control() {
+    use crate::tui::action::FocusItem;
+    let mut dialog = clone_dialog(Some("/work"));
+    type_text(&mut dialog, "owner/repo");
+    for (item, shown, hidden) in [
+        (FocusItem::Source, "Ctrl-W Word", "h/l Switch"),
+        (FocusItem::ProtocolSsh, "h/l Switch", "Ctrl-W Word"),
+        (FocusItem::PresetsToggle, "Space Toggle", "h/l Switch"),
+        (FocusItem::AddParent, "Space Toggle", "Ctrl-W Word"),
+    ] {
+        dialog.focus_item(item);
+        let hint = modal_hint(&dialog, 80, 20);
+        assert!(hint.contains(shown), "{item:?}: {hint}");
+        assert!(!hint.contains(hidden), "{item:?}: {hint}");
+        assert!(hint.contains("Enter Clone"), "{item:?}: {hint}");
+        assert!(hint.contains("Esc Cancel"), "{item:?}: {hint}");
+    }
+    dialog.focus_item(FocusItem::PresetsToggle);
+    dialog.handle_key(key(KeyCode::Char(' ')));
+    dialog.focus_item(FocusItem::SshPrefix);
+    let hint = modal_hint(&dialog, 80, 20);
+    assert!(hint.contains("Ctrl-W Word"), "{hint}");
+    assert!(!hint.contains("Space Toggle"), "{hint}");
+}
+
+#[test]
+fn source_destination_hint_fits_narrow_modal_without_mid_phrase_truncation() {
+    let mut dialog = clone_dialog(Some("/work"));
+    type_text(&mut dialog, "owner/repo");
+    let hint = modal_hint(&dialog, 60, 20);
+    assert!(hint.contains("Ctrl-W Word"), "{hint}");
+    assert!(hint.contains("Tab Next"), "{hint}");
+    assert!(hint.contains("Enter Clone"), "{hint}");
+    assert!(!hint.contains('…'), "{hint}");
+}
+
+#[test]
+fn clone_validation_error_does_not_override_running_footer() {
+    let mut dialog = clone_dialog(Some("/work"));
+    dialog.mark_child_started();
+
+    let text = buf_text(&paint(&dialog, 80, 24));
+    assert!(text.contains("Ctrl-G requests cancel"), "{text}");
+    assert!(
+        !text.contains("Ctrl-W Word"),
+        "running hint is retained: {text}"
+    );
+    assert!(!text.contains("destination already exists"), "{text}");
+}
+
+#[test]
+fn invalid_clone_error_remains_visible_at_short_terminal_height() {
+    let mut dialog = clone_dialog(None);
+    type_text(&mut dialog, "abc");
+    dialog.handle_key(key(KeyCode::Enter));
+
+    let text = buf_text(&paint(&dialog, 80, 14));
+    assert!(
+        text.contains("repository path must include owner/repo"),
+        "{text}"
+    );
+    assert!(
+        !text.contains("Ctrl-W Word"),
+        "validation has precedence: {text}"
+    );
+    assert!(!dialog.git_started());
+}
+
+#[test]
+fn clone_composer_shows_protocols_without_prefix_or_command_preview() {
+    let mut dialog = clone_dialog(Some("/work"));
+    type_text(&mut dialog, "acme/repo");
+    let text = buf_text(&paint(&dialog, 100, 42));
+    assert!(text.contains("[ SSH ] [ HTTPS ]"), "{text}");
+    assert!(text.contains("Repository path"), "{text}");
+    assert!(text.contains("→ /work/repo"), "{text}");
+    assert!(!text.contains("git@github.com:"), "{text}");
+    assert!(!text.contains("https://github.com"), "{text}");
+    assert!(!text.contains("git clone"), "{text}");
+}
+
+#[test]
+fn focused_and_selected_clone_controls_use_accent_foreground() {
+    use crate::tui::action::FocusItem;
+    let mut dialog = clone_dialog(Some("/work"));
+    let protocol_cell = |dialog: &ActionDialog, label: &str| {
+        let buf = paint(dialog, 100, 42);
+        let (row, x) = (0..buf.area.height)
+            .find_map(|y| row_text(&buf, y).find(label).map(|x| (y, x as u16)))
+            .unwrap();
+        assert_eq!(buf[(x, row)].fg, T.accent, "{label}");
+    };
+
+    // SSH is selected initially, even while the repository path is focused.
+    protocol_cell(&dialog, "[ SSH ]");
+    dialog.handle_key(key(KeyCode::BackTab));
+    assert_eq!(dialog.item(), Some(FocusItem::ProtocolSsh));
+    dialog.handle_key(key(KeyCode::Right));
+    assert_eq!(dialog.item(), Some(FocusItem::ProtocolHttps));
+    protocol_cell(&dialog, "[ HTTPS ]");
+    dialog.handle_key(key(KeyCode::Left));
+    assert_eq!(dialog.item(), Some(FocusItem::ProtocolSsh));
+    protocol_cell(&dialog, "[ SSH ]");
+
+    dialog.focus_item(FocusItem::PresetsToggle);
+    let buf = paint(&dialog, 100, 42);
+    let (row, x) = (0..buf.area.height)
+        .find_map(|y| {
+            row_text(&buf, y)
+                .find("Edit prefixes")
+                .map(|x| (y, x as u16))
+        })
+        .unwrap();
+    assert_eq!(buf[(x, row)].fg, T.accent, "focused Edit prefixes");
+}
+
+#[test]
+fn prefixes_toggle_renders_as_an_interactive_button() {
+    let dialog = clone_dialog(Some("/work"));
+    let text = buf_text(&paint(&dialog, 100, 42));
+    assert!(text.contains("[ Edit prefixes: show ]"), "{text}");
+}
+
+#[test]
+fn prefixes_are_hidden_until_expanded_and_then_editable() {
+    use crate::tui::action::FocusItem;
+    let mut dialog = clone_dialog(Some("/work"));
+    assert!(!dialog.items().contains(&FocusItem::SshPrefix));
+    assert!(!dialog.items().contains(&FocusItem::HttpsPrefix));
+    let mut text = buf_text(&paint(&dialog, 100, 42));
+    assert!(text.contains("[ Edit prefixes: show ]"), "{text}");
+    assert!(!text.contains("git@github.com:"), "{text}");
+
+    dialog.focus_item(FocusItem::PresetsToggle);
+    dialog.handle_key(key(KeyCode::Char(' ')));
+    assert!(dialog.items().contains(&FocusItem::SshPrefix));
+    assert!(dialog.items().contains(&FocusItem::HttpsPrefix));
+    text = buf_text(&paint(&dialog, 100, 42));
+    assert!(text.contains("git@github.com:"), "{text}");
+    assert!(text.contains("https://github.com"), "{text}");
+}
+
+#[test]
+fn tab_keeps_each_clone_field_visible_at_eighty_by_twenty() {
+    use crate::tui::action::FocusItem;
+    let mut dialog = clone_dialog(Some("/work"));
+    type_text(&mut dialog, "acme/repo");
+    dialog.handle_key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE));
+    assert_eq!(dialog.item(), Some(FocusItem::ProtocolSsh));
+    let text = buf_text(&paint(&dialog, 80, 20));
+    assert!(
+        text.contains("[ HTTPS ]"),
+        "focused protocol clipped: {text}"
+    );
+    dialog.handle_key(key(KeyCode::Tab));
+    assert_eq!(dialog.item(), Some(FocusItem::Source));
+    for (item, visible) in [
+        (FocusItem::Dest, "repo█"),
+        (FocusItem::PresetsToggle, "Edit prefixes"),
+    ] {
+        dialog.handle_key(key(KeyCode::Tab));
+        assert_eq!(dialog.item(), Some(item));
+        let text = buf_text(&paint(&dialog, 80, 20));
+        assert!(text.contains(visible), "focused {item:?} clipped: {text}");
+    }
+    dialog.handle_key(key(KeyCode::Char(' ')));
+    for (item, visible) in [
+        (FocusItem::SshPrefix, "git@github.com:█"),
+        (FocusItem::HttpsPrefix, "https://github.com█"),
+        (FocusItem::AddParent, "Add `/work` to paths"),
+    ] {
+        dialog.handle_key(key(KeyCode::Tab));
+        assert_eq!(dialog.item(), Some(item));
+        let text = buf_text(&paint(&dialog, 80, 20));
+        assert!(text.contains(visible), "focused {item:?} clipped: {text}");
+    }
+}
+
+#[test]
+fn short_terminal_keeps_focused_destination_visible_with_absolute_preview() {
+    use crate::tui::action::FocusItem;
+    let mut dialog = clone_dialog(Some("/work"));
+    type_text(&mut dialog, "acme/repo");
+    dialog.focus_item(FocusItem::Dest);
+
+    let text = buf_text(&paint(&dialog, 80, 14));
+    assert!(
+        text.contains("repo█"),
+        "focused destination clipped: {text}"
+    );
+}
+
+#[test]
+fn short_terminal_can_scroll_to_both_prefix_fields() {
+    use crate::tui::action::FocusItem;
+    let mut dialog = clone_dialog(Some("/work"));
+    let before = buf_text(&paint(&dialog, 80, 24));
+    assert!(before.contains("SSH"), "{before}");
+    dialog.focus_item(FocusItem::PresetsToggle);
+    dialog.handle_key(key(KeyCode::Char(' ')));
+    for (item, key_code) in [
+        (FocusItem::SshPrefix, KeyCode::Tab),
+        (FocusItem::HttpsPrefix, KeyCode::Tab),
+    ] {
+        dialog.handle_key(key(key_code));
+        assert_eq!(dialog.item(), Some(item));
+        let after = buf_text(&paint(&dialog, 80, 24));
+        assert!(after.contains("Edit prefixes"), "{after}");
+    }
+    let after = buf_text(&paint(&dialog, 80, 24));
+    assert!(after.contains("https://github.com"), "{after}");
+    assert!(!after.contains("[Clone (invalid)]"), "{after}");
 }
 
 #[test]
@@ -129,11 +375,11 @@ fn current_stage_body_uses_bg_alt() {
 #[test]
 fn completed_stage_collapses_to_summary() {
     let mut dialog = clone_dialog(Some("/work"));
-    type_text(&mut dialog, "git@x:y.git");
+    type_text(&mut dialog, "acme/y.git");
     dialog.handle_key(key(KeyCode::Enter));
     let buf = paint(&dialog, 80, 24);
     let text = buf_text(&buf);
-    assert!(text.contains("→ /work/git@x:y"), "{text}");
+    assert!(text.contains("→ /work/y"), "{text}");
     assert!(text.contains("Cancel git"), "{text}");
 }
 
@@ -235,7 +481,7 @@ fn toast_success_is_green_cancel_is_accent() {
 #[test]
 fn force_stop_is_the_only_action_after_grace() {
     let mut dialog = clone_dialog(Some("/work"));
-    type_text(&mut dialog, "src.git");
+    type_text(&mut dialog, "acme/src.git");
     dialog.handle_key(key(KeyCode::Enter));
     dialog.handle_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL));
     let t0 = Instant::now();
