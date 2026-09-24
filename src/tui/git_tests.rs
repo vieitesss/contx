@@ -825,11 +825,12 @@ fn refresh_rescans_each_unique_root_once() {
             let resolves = Arc::clone(&resolves);
             move |c: &str| {
                 resolves.fetch_add(1, Ordering::SeqCst);
-                match c {
+                let resolved = match c {
                     "/a/x" | "/a/y" => root("/ra", false),
                     "/b" => root("/rb", false),
                     other => panic!("unexpected candidate {other}"),
-                }
+                };
+                (resolved, Head::Absent)
             }
         }),
         scan: Arc::new({
@@ -856,6 +857,8 @@ fn refresh_rescans_each_unique_root_once() {
                 release_rx.lock().unwrap().recv().unwrap();
             }
         }),
+        pr: Arc::new(|_, _| super::PullRequestLookup::Missing),
+        cycle_delay: Duration::ZERO,
     };
     let rx = start_poll_with(
         vec!["/a/x".to_string(), "/a/y".to_string(), "/b".to_string()],
@@ -1433,11 +1436,11 @@ fn known_with(
         state,
         head: Head::Absent,
         upstream,
+        pull_request: None,
+        pull_request_checked: false,
     }
 }
 
-        pull_request: None,
-        pull_request_checked: false,
 fn known(root: Option<&str>, state: WorkState) -> CandidateState {
     known_with(root, state, Upstream::Absent)
 }
@@ -1701,6 +1704,13 @@ fn git_fail() -> io::Result<RawOutput> {
     })
 }
 
+fn git_nonzero(stdout: &str) -> io::Result<RawOutput> {
+    Ok(RawOutput {
+        success: false,
+        stdout: stdout.as_bytes().to_vec(),
+    })
+}
+
 fn git_launch_err() -> io::Result<RawOutput> {
     Err(io::Error::new(ErrorKind::NotFound, "no git"))
 }
@@ -1729,6 +1739,95 @@ fn porcelain(entries: &[&str]) -> String {
         s.push('\0');
     }
     s
+}
+
+#[test]
+fn resolve_head_reads_root_bare_and_branch_with_one_git_process() {
+    let tmp = TempDir::new();
+    let root = marked(&tmp, "repo", false);
+    let mut runner =
+        ScriptRunner::new(vec![git_ok(&format!("{root}\nfalse\ntopic\n"))]);
+    assert_eq!(
+        super::resolve_head_with(&root, &mut runner),
+        (
+            RootResolve::Root(root.clone(), false, None),
+            Head::Named("topic".into())
+        ),
+    );
+    assert_eq!(runner.calls.len(), 1);
+    assert_eq!(
+        runner.calls[0].1,
+        [
+            "rev-parse",
+            "--show-toplevel",
+            "--is-bare-repository",
+            "--abbrev-ref",
+            "HEAD"
+        ],
+    );
+}
+
+#[test]
+fn resolve_head_detached_fetches_short_sha_only_after_combined_query() {
+    let tmp = TempDir::new();
+    let root = marked(&tmp, "repo", false);
+    let mut runner = ScriptRunner::new(vec![
+        git_ok(&format!("{root}\nfalse\nHEAD\n")),
+        git_ok("a1b2c3d\n"),
+    ]);
+    assert_eq!(
+        super::resolve_head_with(&root, &mut runner),
+        (
+            RootResolve::Root(root, false, None),
+            Head::Detached {
+                short: "a1b2c3d".into()
+            }
+        ),
+    );
+    assert_eq!(runner.calls[1].1, ["rev-parse", "--short", "HEAD"]);
+}
+
+#[test]
+fn resolve_head_retains_valid_root_when_unborn_head_exits_nonzero() {
+    let tmp = TempDir::new();
+    let root = marked(&tmp, "repo", false);
+    let mut runner =
+        ScriptRunner::new(vec![git_nonzero(&format!("{root}\nfalse\nHEAD\n"))]);
+    assert_eq!(
+        super::resolve_head_with(&root, &mut runner),
+        (RootResolve::Root(root, false, None), Head::Absent),
+    );
+    assert_eq!(runner.calls.len(), 1);
+}
+
+#[test]
+fn resolve_head_handles_newline_in_root_path() {
+    let tmp = TempDir::new();
+    let root = marked(&tmp, "line\nbreak", false);
+    let mut runner =
+        ScriptRunner::new(vec![git_ok(&format!("{root}\nfalse\ntopic\n"))]);
+    assert_eq!(
+        super::resolve_head_with(&root, &mut runner),
+        (
+            RootResolve::Root(root, false, None),
+            Head::Named("topic".into())
+        ),
+    );
+}
+
+#[test]
+fn resolve_head_keeps_unborn_real_worktree_instead_of_failed() {
+    let tmp = TempDir::new();
+    let root = tmp.child("unborn");
+    let status = Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(&root)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let (resolved, head) = super::resolve_head(root.to_str().unwrap());
+    assert!(matches!(resolved, RootResolve::Root(..)));
+    assert_eq!(head, Head::Absent);
 }
 
 #[test]
@@ -1949,8 +2048,7 @@ fn scripted_common_dir_relative_absolute_and_failed_linked() {
     let tmp = TempDir::new();
     let linked = marked(&tmp, "wt", true);
     let mut runner = ScriptRunner::new(vec![
-        git_ok(&format!("{linked}\n")),
-        git_ok("false\n"),
+        git_ok(&format!("{linked}\nfalse\nside\n")),
         git_ok("../main/.git\n"),
     ]);
     match resolve_root_with(&linked, &mut runner) {
@@ -1965,8 +2063,7 @@ fn scripted_common_dir_relative_absolute_and_failed_linked() {
     }
 
     let mut runner = ScriptRunner::new(vec![
-        git_ok(&format!("{linked}\n")),
-        git_ok("false\n"),
+        git_ok(&format!("{linked}\nfalse\nside\n")),
         git_ok("/abs/main/.git\n"),
     ]);
     match resolve_root_with(&linked, &mut runner) {
@@ -1977,8 +2074,7 @@ fn scripted_common_dir_relative_absolute_and_failed_linked() {
     }
 
     let mut runner = ScriptRunner::new(vec![
-        git_ok(&format!("{linked}\n")),
-        git_ok("false\n"),
+        git_ok(&format!("{linked}\nfalse\nside\n")),
         git_fail(),
     ]);
     match resolve_root_with(&linked, &mut runner) {
@@ -1991,16 +2087,15 @@ fn scripted_common_dir_relative_absolute_and_failed_linked() {
 fn scripted_failed_bare_and_linked_resolve() {
     let tmp = TempDir::new();
     let ordinary = marked(&tmp, "repo", false);
-    let mut runner =
-        ScriptRunner::new(vec![git_ok(&format!("{ordinary}\n")), git_fail()]);
+    let mut runner = ScriptRunner::new(vec![git_ok(&format!(
+        "{ordinary}\nmaybe\nbranch\n"
+    ))]);
     assert_eq!(
         resolve_root_with(&ordinary, &mut runner),
         RootResolve::Failed
     );
-    let mut runner = ScriptRunner::new(vec![
-        git_ok(&format!("{ordinary}\n")),
-        git_ok("true\n"),
-    ]);
+    let mut runner =
+        ScriptRunner::new(vec![git_ok(&format!("{ordinary}\ntrue\nbranch\n"))]);
     assert_eq!(
         resolve_root_with(&ordinary, &mut runner),
         RootResolve::Nonrepo
@@ -2026,6 +2121,8 @@ fn last_known_partial_introduces_late_linked_nesting() {
             state: WorkState::Clean,
             head: Head::Named("side".to_string()),
             upstream: Upstream::Absent,
+            pull_request: None,
+            pull_request_checked: false,
         },
     )]);
     assert_eq!(
@@ -2085,6 +2182,8 @@ fn git_states_retain_paths_drops_survivors_only() {
             state: WorkState::Clean,
             head: Head::Absent,
             upstream: Upstream::Absent,
+            pull_request: None,
+            pull_request_checked: false,
         },
     )]);
     states.apply(vec![(
@@ -2096,6 +2195,8 @@ fn git_states_retain_paths_drops_survivors_only() {
             state: WorkState::Clean,
             head: Head::Absent,
             upstream: Upstream::Absent,
+            pull_request: None,
+            pull_request_checked: false,
         },
     )]);
     let keep = HashSet::from(["/a".to_string()]);
