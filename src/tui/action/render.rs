@@ -463,7 +463,11 @@ fn accordion_lines(dialog: &ActionDialog, width: usize) -> Vec<Line<'static>> {
             for b in body {
                 let mut row = vec![Span::styled(" │ ", st(T.comment, tint))];
                 for mut sp in b.spans {
-                    sp.style = sp.style.bg(tint);
+                    // Preserve the cursor's dark block; tinting its background
+                    // makes the inverse space indistinguishable from the row.
+                    if !sp.style.add_modifier.contains(Modifier::SLOW_BLINK) {
+                        sp.style = sp.style.bg(tint);
+                    }
                     row.push(sp);
                 }
                 lines.push(fill(row, width, tint));
@@ -517,12 +521,20 @@ fn field_spans(
     let chars: Vec<char> = shown.chars().collect();
     let i = cursor.min(chars.len());
     let left: String = chars[..i].iter().collect();
-    let right: String = chars[i..].iter().collect();
+    let right: String = if i < chars.len() {
+        chars[i + 1..].iter().collect()
+    } else {
+        String::new()
+    };
     let mut s = vec![];
     if !left.is_empty() {
         s.push(Span::styled(left, st(T.fg, T.bg)));
     }
-    s.push(Span::styled("█", st(T.git_icon, T.bg)));
+    let cursor_char = chars.get(i).copied().unwrap_or(' ');
+    s.push(Span::styled(
+        cursor_char.to_string(),
+        st(T.bg, T.fg).add_modifier(Modifier::SLOW_BLINK),
+    ));
     if !right.is_empty() {
         s.push(Span::styled(right, st(T.fg, T.bg)));
     }

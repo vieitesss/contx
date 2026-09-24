@@ -1,10 +1,12 @@
-use super::{ToastKind, modal_rect, render_dialog, render_toast};
+use super::{ToastKind, field_spans, modal_rect, render_dialog, render_toast};
 use crate::theme::Theme;
 use crate::tui::action::{ActionDialog, CloneDestProbe, GRACE_FOR};
 use ratatui::{
+    backend::{Backend, CrosstermBackend},
     buffer::Buffer,
     crossterm::event::{KeyCode, KeyEvent, KeyModifiers},
     layout::Rect,
+    style::Modifier,
 };
 use std::ffi::OsString;
 use std::time::Instant;
@@ -67,6 +69,28 @@ fn buf_text(buf: &Buffer) -> String {
         .join("\n")
 }
 
+fn cell_at_text<'a>(
+    buf: &'a Buffer,
+    needle: &str,
+    offset: u16,
+) -> &'a ratatui::buffer::Cell {
+    let (y, x) = (0..buf.area.height)
+        .find_map(|y| {
+            let row = row_text(buf, y);
+            row.find(needle)
+                .map(|x| (y, row[..x].chars().count() as u16))
+        })
+        .unwrap_or_else(|| panic!("missing {needle:?} in {}", buf_text(buf)));
+    &buf[(x + offset, y)]
+}
+
+fn assert_inverse_cursor(cell: &ratatui::buffer::Cell, symbol: &str) {
+    assert_eq!(cell.symbol(), symbol);
+    assert_eq!(cell.fg, T.bg);
+    assert_eq!(cell.bg, T.fg, "cursor must be a contrasting block");
+    assert!(cell.modifier.contains(Modifier::SLOW_BLINK));
+}
+
 fn modal_hint(dialog: &ActionDialog, w: u16, h: u16) -> String {
     let buf = paint(dialog, w, h);
     let row = modal_rect(Rect::new(0, 0, w, h)).y
@@ -78,6 +102,138 @@ fn modal_hint(dialog: &ActionDialog, w: u16, h: u16) -> String {
 fn type_text(dialog: &mut ActionDialog, s: &str) {
     for c in s.chars() {
         dialog.handle_key(key(KeyCode::Char(c)));
+    }
+}
+
+#[test]
+fn focused_field_cursor_inverts_and_blinks_the_character_under_it() {
+    let spans = field_spans("abc", 1, true, false);
+
+    assert_eq!(spans.len(), 3);
+    assert_eq!(spans[0].content, "a");
+    assert_eq!(spans[1].content, "b");
+    assert_eq!(spans[2].content, "c");
+    assert_eq!(
+        spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>(),
+        "abc"
+    );
+    assert_eq!(spans[1].style.fg, Some(T.bg));
+    assert_eq!(spans[1].style.bg, Some(T.fg));
+    assert!(
+        spans[1]
+            .style
+            .add_modifier
+            .contains(ratatui::style::Modifier::SLOW_BLINK)
+    );
+}
+
+#[test]
+fn focused_field_cursor_uses_a_blinking_inverse_space_at_end() {
+    let spans = field_spans("abc", 3, true, false);
+
+    assert_eq!(spans.len(), 2);
+    assert_eq!(spans[0].content, "abc");
+    assert_eq!(spans[1].content, " ");
+    assert_eq!(spans[1].style.fg, Some(T.bg));
+    assert_eq!(spans[1].style.bg, Some(T.fg));
+    assert!(
+        spans[1]
+            .style
+            .add_modifier
+            .contains(ratatui::style::Modifier::SLOW_BLINK)
+    );
+}
+
+#[test]
+fn painted_clone_source_cursor_is_a_contrasting_blinking_block_on_a_character()
+{
+    let mut dialog = clone_dialog(Some("/work"));
+    type_text(&mut dialog, "abc");
+    dialog.handle_key(key(KeyCode::Left));
+    dialog.handle_key(key(KeyCode::Left));
+
+    let buf = paint(&dialog, 100, 42);
+    assert_inverse_cursor(cell_at_text(&buf, "abc", 1), "b");
+}
+
+#[test]
+fn painted_clone_source_cursor_is_a_contrasting_blinking_block_at_end() {
+    let mut dialog = clone_dialog(Some("/work"));
+    type_text(&mut dialog, "abc");
+
+    let buf = paint(&dialog, 100, 42);
+    assert_inverse_cursor(cell_at_text(&buf, "abc", 3), " ");
+}
+
+#[test]
+fn painted_empty_source_has_a_visible_space_cursor_and_blur_removes_it() {
+    let mut dialog = clone_dialog(Some("/work"));
+    let buf = paint(&dialog, 100, 42);
+    let label_row = (0..buf.area.height)
+        .find(|&y| row_text(&buf, y).contains("Repository path"))
+        .unwrap();
+    let x = modal_rect(buf.area).x + 5; // left border, padding, then " │ "
+    assert_inverse_cursor(&buf[(x, label_row + 1)], " ");
+
+    dialog.handle_key(key(KeyCode::Tab));
+    let unfocused = paint(&dialog, 100, 42);
+    assert!(
+        !unfocused[(x, label_row + 1)]
+            .modifier
+            .contains(Modifier::SLOW_BLINK)
+    );
+    assert_eq!(unfocused[(x, label_row + 1)].bg, T.bg_alt);
+}
+
+#[test]
+fn painted_destination_and_prefix_cursor_survives_focus_and_insert() {
+    use crate::tui::action::FocusItem;
+    let mut dialog = clone_dialog(Some("/work"));
+    type_text(&mut dialog, "owner/repo");
+    dialog.focus_item(FocusItem::Dest);
+    dialog.handle_key(key(KeyCode::Home));
+    let buf = paint(&dialog, 100, 42);
+    assert_inverse_cursor(cell_at_text(&buf, " │ repo", 3), "r");
+    dialog.handle_key(key(KeyCode::Char('x')));
+    assert_eq!(dialog.dest(), "xrepo");
+    let buf = paint(&dialog, 100, 42);
+    assert_inverse_cursor(cell_at_text(&buf, " │ xrepo", 4), "r");
+
+    dialog.focus_item(FocusItem::PresetsToggle);
+    dialog.handle_key(key(KeyCode::Char(' ')));
+    dialog.focus_item(FocusItem::SshPrefix);
+    let buf = paint(&dialog, 100, 42);
+    assert_inverse_cursor(cell_at_text(&buf, "git@github.com:", 15), " ");
+}
+
+#[test]
+fn crossterm_outputs_cursor_background_and_blink_attribute() {
+    let mut dialog = clone_dialog(Some("/work"));
+    type_text(&mut dialog, "abc");
+    for (offset, symbol) in [(3, " "), (1, "b")] {
+        if offset == 1 {
+            dialog.handle_key(key(KeyCode::Left));
+            dialog.handle_key(key(KeyCode::Left));
+        }
+        let buf = paint(&dialog, 100, 42);
+        let cell = cell_at_text(&buf, "abc", offset);
+        let mut bytes = Vec::new();
+        CrosstermBackend::new(&mut bytes)
+            .draw(std::iter::once((0, 0, cell)))
+            .unwrap();
+        let ansi = String::from_utf8(bytes).unwrap();
+        assert!(ansi.contains("\u{1b}[5m"), "blink not emitted: {ansi:?}");
+        assert!(
+            ansi.contains("38;2;245;245;245;48;2;40;40;40m"),
+            "inverse colors not emitted: {ansi:?}"
+        );
+        assert!(
+            ansi.contains(&format!("m{symbol}\u{1b}[")),
+            "cursor character missing: {ansi:?}"
+        );
     }
 }
 
@@ -298,7 +454,7 @@ fn tab_keeps_each_clone_field_visible_at_eighty_by_twenty() {
     dialog.handle_key(key(KeyCode::Tab));
     assert_eq!(dialog.item(), Some(FocusItem::Source));
     for (item, visible) in [
-        (FocusItem::Dest, "repo█"),
+        (FocusItem::Dest, "repo"),
         (FocusItem::PresetsToggle, "Edit prefixes"),
     ] {
         dialog.handle_key(key(KeyCode::Tab));
@@ -308,8 +464,8 @@ fn tab_keeps_each_clone_field_visible_at_eighty_by_twenty() {
     }
     dialog.handle_key(key(KeyCode::Char(' ')));
     for (item, visible) in [
-        (FocusItem::SshPrefix, "git@github.com:█"),
-        (FocusItem::HttpsPrefix, "https://github.com█"),
+        (FocusItem::SshPrefix, "git@github.com:"),
+        (FocusItem::HttpsPrefix, "https://github.com"),
         (FocusItem::AddParent, "Add `/work` to paths"),
     ] {
         dialog.handle_key(key(KeyCode::Tab));
@@ -326,11 +482,10 @@ fn short_terminal_keeps_focused_destination_visible_with_absolute_preview() {
     type_text(&mut dialog, "acme/repo");
     dialog.focus_item(FocusItem::Dest);
 
-    let text = buf_text(&paint(&dialog, 80, 14));
-    assert!(
-        text.contains("repo█"),
-        "focused destination clipped: {text}"
-    );
+    let buf = paint(&dialog, 80, 14);
+    let text = buf_text(&buf);
+    assert!(text.contains("repo"), "focused destination clipped: {text}");
+    assert_inverse_cursor(cell_at_text(&buf, " │ repo", 7), " ");
 }
 
 #[test]
