@@ -298,6 +298,24 @@ pub fn activate_auto(candidate: &str) -> Result<ActivateResult, ActivateError> {
     )
 }
 
+/// Resolve `auto` for a noninteractive CLI operation without opening a target.
+pub(crate) fn detect_auto_backend() -> Result<Backend, ActivateError> {
+    let tty = controlling_tty();
+    let mut runner = ProductionRunner;
+    detect_auto(&|name| env::var_os(name), tty.as_deref(), &mut || {
+        probe_tmux_ttys(&mut runner)
+    })
+    .map_err(ActivateError::Detect)
+}
+
+pub(crate) fn require_herdr_context() -> Result<(), ActivateError> {
+    if herdr_context(&|name| env::var_os(name)) {
+        Ok(())
+    } else {
+        Err(ActivateError::NotInHerdr)
+    }
+}
+
 /// Explicit tmux: skip inner-vs-outer TTY probe; `tmux::open` still
 /// requires nonempty `TMUX`.
 pub fn activate_explicit_tmux(

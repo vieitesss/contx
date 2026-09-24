@@ -4,7 +4,7 @@ use std::{
     fs,
     io::{self, IsTerminal, Write},
     path::Path,
-    process::Command,
+    process::{Command, Stdio},
 };
 
 use crate::config::ResolvedConfig;
@@ -68,16 +68,20 @@ impl TrashOps for ProductionTrash {
     }
 }
 
-struct ProductionWorktree;
+struct ProductionWorktree(bool);
 
 impl WorktreeOps for ProductionWorktree {
     fn remove(&mut self, path: &str) -> Result<(), String> {
-        let status = Command::new("git")
+        let mut command = Command::new("git");
+        command
             .arg("-C")
             .arg(path)
-            .args(["worktree", "remove", path])
-            .status()
-            .map_err(|e| e.to_string())?;
+            .args(["worktree", "remove", path]);
+        if self.0 {
+            command.stdout(Stdio::from(io::stderr()));
+            command.env("GIT_TERMINAL_PROMPT", "0");
+        }
+        let status = command.status().map_err(|e| e.to_string())?;
         if status.success() {
             Ok(())
         } else if status.code().is_none() {
@@ -128,22 +132,24 @@ pub fn run(
     request: &DeleteRequest,
 ) -> Result<DeleteOutcome, DeleteError> {
     let cwd = env::current_dir().map_err(DeleteError::Io)?;
-    run_with(
+    run_with_options(
         config,
         request,
         &cwd,
         &cwd,
         &|name| env::var_os(name),
         crate::mux::pane_cwds(config.multiplexer),
-        &mut crate::delete::preflight::ProductionFetcher,
+        &mut crate::delete::preflight::ProductionFetcher(config.json),
         &mut ProductionTrash,
-        &mut ProductionWorktree,
+        &mut ProductionWorktree(config.json),
         &mut ProductionConfirm,
         &mut io::stdout(),
         &mut io::stderr(),
+        config.json,
     )
 }
 
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_with(
     config: &ResolvedConfig,
@@ -159,6 +165,42 @@ pub(crate) fn run_with(
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> Result<DeleteOutcome, DeleteError> {
+    run_with_options(
+        config,
+        request,
+        cwd,
+        process_cwd,
+        env,
+        panes,
+        fetcher,
+        trash,
+        worktree,
+        confirm,
+        stdout,
+        stderr,
+        false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_with_options(
+    config: &ResolvedConfig,
+    request: &DeleteRequest,
+    cwd: &Path,
+    process_cwd: &Path,
+    env: &dyn Fn(&str) -> Option<OsString>,
+    panes: PaneCwdOutcome,
+    fetcher: &mut dyn Fetcher,
+    trash: &mut dyn TrashOps,
+    worktree: &mut dyn WorktreeOps,
+    confirm: &mut dyn Confirm,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+    json: bool,
+) -> Result<DeleteOutcome, DeleteError> {
+    if json && !request.dry_run && !request.force {
+        return Err(DeleteError::ConfirmationRequired);
+    }
     let report = preflight(
         &request.path,
         &config.candidates,
@@ -173,7 +215,9 @@ pub(crate) fn run_with(
     )?;
 
     if request.dry_run {
-        write!(stdout, "{report}").map_err(DeleteError::Io)?;
+        if !json {
+            write!(stdout, "{report}").map_err(DeleteError::Io)?;
+        }
         return Ok(DeleteOutcome::DryRun(report));
     }
 
@@ -186,7 +230,9 @@ pub(crate) fn run_with(
         .clone()
         .ok_or_else(|| DeleteError::NotCandidate(report.path.clone()))?;
 
-    write!(stderr, "{report}").map_err(DeleteError::Io)?;
+    if !json {
+        write!(stderr, "{report}").map_err(DeleteError::Io)?;
+    }
 
     if !request.force {
         match confirm_strategy(confirm, &target)? {
@@ -205,6 +251,7 @@ pub(crate) fn run_with(
         confirm,
         request.force,
         interactive,
+        json,
     )
 }
 
@@ -252,6 +299,7 @@ fn apply(
     confirm: &mut dyn Confirm,
     force: bool,
     interactive: bool,
+    json: bool,
 ) -> Result<DeleteOutcome, DeleteError> {
     match target.strategy {
         DeleteStrategy::GitWorktree => {
@@ -279,7 +327,7 @@ fn apply(
                 strategy: DeleteStrategy::Trash,
             }),
             Err(cause) => {
-                trash_failed(target, &cause, confirm, force, interactive)
+                trash_failed(target, &cause, confirm, force, interactive, json)
             }
         },
     }
@@ -291,9 +339,10 @@ fn trash_failed(
     confirm: &mut dyn Confirm,
     force: bool,
     interactive: bool,
+    json: bool,
 ) -> Result<DeleteOutcome, DeleteError> {
     let _ = force;
-    if !interactive {
+    if json || !interactive {
         return Err(DeleteError::TrashFailed {
             path: target.path.clone(),
             cause: cause.to_string(),

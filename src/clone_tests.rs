@@ -1,5 +1,6 @@
 use super::{
     CloneError, CloneOutcome, GitClone, GitCloneStatus, Interact, run_with,
+    run_with_options,
 };
 use crate::{
     config::{Command, Multiplexer, ResolvedConfig},
@@ -25,6 +26,7 @@ fn test_config(config_path: &Path, paths: &[&str]) -> ResolvedConfig {
         candidates: vec![],
         multiplexer: Multiplexer::Auto,
         command: Command::Picker,
+        json: false,
         permanent_delete: false,
         clone: crate::config::CloneSettings::default(),
         config_path: config_path.display().to_string(),
@@ -191,6 +193,56 @@ impl GitClone for LocalGit {
             })
         }
     }
+}
+
+#[test]
+fn machine_clone_skips_tty_prompt_and_add_parent_is_explicit() {
+    let d = TempDir::new();
+    let config_file = d.path().join("config.toml");
+    let mut config = test_config(&config_file, &[]);
+    config.json = true;
+    let mut git = ScriptGit::ok();
+    let mut interact = ScriptInteract::yes();
+    let mut err = Vec::new();
+    let dest = d.path().join("first");
+    let result = run_with_options(
+        &config,
+        "source",
+        dest.to_str().unwrap(),
+        d.path(),
+        &env_from(&[]),
+        &mut git,
+        &mut interact,
+        &mut err,
+        false,
+    )
+    .unwrap();
+    assert!(!result.config_updated);
+    assert!(!result.discoverable);
+    assert!(interact.asked.is_empty());
+    assert!(!config_file.exists());
+
+    let dest = d.path().join("second");
+    let result = run_with_options(
+        &config,
+        "source",
+        dest.to_str().unwrap(),
+        d.path(),
+        &env_from(&[]),
+        &mut git,
+        &mut interact,
+        &mut err,
+        true,
+    )
+    .unwrap();
+    assert!(result.config_updated);
+    assert!(result.discoverable);
+    assert!(interact.asked.is_empty());
+    assert!(
+        fs::read_to_string(config_file)
+            .unwrap()
+            .contains(&d.path().display().to_string())
+    );
 }
 
 #[test]

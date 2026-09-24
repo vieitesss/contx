@@ -1,6 +1,6 @@
 mod error;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::{
     collections::HashSet,
     env::{self, VarError},
@@ -21,11 +21,15 @@ const DEFAULT_CONFIG_FILE: &str = "~/.config/contx/config.toml";
 /// Multiplexer-neutral usage, printed for `--help` / `-h`.
 pub const USAGE: &str = "\
 contx [options]
-contx [options] clone <source> [destination]
+contx [options] list
+contx [options] open [--workspace-id <id>] <path>
+contx [options] clone [--add-parent] <source> [destination]
+contx [options] worktree create [--new-branch] [--add-parent] <repo> <branch> <destination>
 contx [options] delete [--dry-run] [--permanent] [--force] <path>
 
   -c, --config-file <path>         configuration file
   --multiplexer auto|tmux|herdr    multiplexer (default: auto)
+  --json                           structured output for non-picker commands
   -h, --help                       show this help
 ";
 
@@ -84,9 +88,22 @@ impl Default for CloneSettings {
 pub enum Command {
     #[default]
     Picker,
+    List,
+    Open {
+        path: String,
+        workspace_id: Option<String>,
+    },
     Clone {
         source: String,
         destination: String,
+        add_parent: bool,
+    },
+    WorktreeCreate {
+        repo: String,
+        branch: String,
+        destination: String,
+        new_branch: bool,
+        add_parent: bool,
     },
     Delete {
         path: String,
@@ -103,6 +120,7 @@ pub struct ResolvedConfig {
     pub candidates: Vec<SessionCandidate>,
     pub multiplexer: Multiplexer,
     pub command: Command,
+    pub json: bool,
     /// Ordinary-directory / standalone-repo / symlink deletion strategy.
     /// Linked worktrees always use Git. Default false (trash).
     pub permanent_delete: bool,
@@ -121,21 +139,36 @@ pub struct ResolvedConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Startup {
     Help,
-    Ready(ResolvedConfig),
+    Ready(Box<ResolvedConfig>),
 }
 
 struct CliArgs {
     config_file: Option<String>,
     multiplexer: Option<Multiplexer>,
     command: Command,
+    json: bool,
 }
 
 /// Subcommand operands collected while walking argv.
 enum PendingCommand {
     Picker,
+    List,
+    Open {
+        path: Option<String>,
+        workspace_id: Option<String>,
+    },
     Clone {
         source: Option<String>,
         destination: Option<String>,
+        add_parent: bool,
+    },
+    WorktreeCreate {
+        create: bool,
+        repo: Option<String>,
+        branch: Option<String>,
+        destination: Option<String>,
+        new_branch: bool,
+        add_parent: bool,
     },
     Delete {
         path: Option<String>,
@@ -162,7 +195,7 @@ struct Loaded {
 /// for `dir/*` grandchildren, or the `$HOME` path for
 /// git-from-home discoveries. Selection and Git polling use
 /// only `path`; grouping is presentation over the matches.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SessionCandidate {
     pub path: String,
     pub group: String,
@@ -220,17 +253,18 @@ pub(crate) fn resolve_with(
         Some(config_file) => load_candidates(config_file, true, env)?,
         None => load_candidates(DEFAULT_CONFIG_FILE, false, env)?,
     };
-    Ok(Startup::Ready(ResolvedConfig {
+    Ok(Startup::Ready(Box::new(ResolvedConfig {
         candidates: loaded.candidates,
         multiplexer: cli.multiplexer.unwrap_or(loaded.multiplexer),
         command: cli.command,
+        json: cli.json,
         permanent_delete: loaded.permanent_delete,
         clone: loaded.clone,
         config_path: loaded.config_path,
         paths: loaded.paths,
         git_from_home: loaded.git_from_home,
         config_existed: loaded.config_existed,
-    }))
+    })))
 }
 
 /// Parse startup arguments. `--help` / `-h` yields `None` (help). Otherwise
@@ -242,6 +276,7 @@ fn parse_args(
 ) -> Result<Option<CliArgs>> {
     let mut config_file = None;
     let mut multiplexer = None;
+    let mut json = false;
     let mut pending = PendingCommand::Picker;
     let mut args = args.iter();
     while let Some(arg) = args.next() {
@@ -259,12 +294,70 @@ fn parse_args(
                 let value = args.next().ok_or(ConfigError::ArgNotFound)?;
                 multiplexer = Some(Multiplexer::from_arg(value)?);
             }
+            "--json" => json = true,
+            "list" if matches!(pending, PendingCommand::Picker) => {
+                pending = PendingCommand::List;
+            }
+            "open" if matches!(pending, PendingCommand::Picker) => {
+                pending = PendingCommand::Open {
+                    path: None,
+                    workspace_id: None,
+                };
+            }
             "clone" if matches!(pending, PendingCommand::Picker) => {
                 pending = PendingCommand::Clone {
                     source: None,
                     destination: None,
+                    add_parent: false,
                 };
             }
+            "worktree" if matches!(pending, PendingCommand::Picker) => {
+                pending = PendingCommand::WorktreeCreate {
+                    create: false,
+                    repo: None,
+                    branch: None,
+                    destination: None,
+                    new_branch: false,
+                    add_parent: false,
+                };
+            }
+            "create"
+                if matches!(
+                    pending,
+                    PendingCommand::WorktreeCreate { create: false, .. }
+                ) =>
+            {
+                if let PendingCommand::WorktreeCreate { create, .. } =
+                    &mut pending
+                {
+                    *create = true;
+                }
+            }
+            "--workspace-id" => match &mut pending {
+                PendingCommand::Open { workspace_id, .. }
+                    if workspace_id.is_none() =>
+                {
+                    let id = args.next().ok_or(ConfigError::ArgNotFound)?;
+                    if id.is_empty() || id.starts_with('-') {
+                        return Err(ConfigError::ArgIsNotValid(id.clone()));
+                    }
+                    *workspace_id = Some(id.clone());
+                }
+                _ => return Err(ConfigError::ArgIsNotValid(arg.clone())),
+            },
+            "--new-branch" => match &mut pending {
+                PendingCommand::WorktreeCreate { new_branch, .. } => {
+                    *new_branch = true
+                }
+                _ => return Err(ConfigError::ArgIsNotValid(arg.clone())),
+            },
+            "--add-parent" => match &mut pending {
+                PendingCommand::Clone { add_parent, .. }
+                | PendingCommand::WorktreeCreate { add_parent, .. } => {
+                    *add_parent = true
+                }
+                _ => return Err(ConfigError::ArgIsNotValid(arg.clone())),
+            },
             "delete" if matches!(pending, PendingCommand::Picker) => {
                 pending = PendingCommand::Delete {
                     path: None,
@@ -293,10 +386,14 @@ fn parse_args(
             other => take_operand(&mut pending, other, arg)?,
         }
     }
+    if json && matches!(pending, PendingCommand::Picker) {
+        return Err(ConfigError::ArgIsNotValid("--json".to_string()));
+    }
     Ok(Some(CliArgs {
         config_file,
         multiplexer,
         command: finish_command(pending)?,
+        json,
     }))
 }
 
@@ -306,12 +403,20 @@ fn take_operand(
     arg: &str,
 ) -> Result<()> {
     match pending {
-        PendingCommand::Picker => {
+        PendingCommand::Picker | PendingCommand::List => {
             Err(ConfigError::ArgIsNotValid(arg.to_string()))
+        }
+        PendingCommand::Open { path, .. } => {
+            if path.replace(other.to_string()).is_none() {
+                Ok(())
+            } else {
+                Err(ConfigError::ArgIsNotValid(arg.to_string()))
+            }
         }
         PendingCommand::Clone {
             source,
             destination,
+            ..
         } => {
             if source.is_none() {
                 *source = Some(other.to_string());
@@ -322,6 +427,27 @@ fn take_operand(
             } else {
                 Err(ConfigError::ArgIsNotValid(arg.to_string()))
             }
+        }
+        PendingCommand::WorktreeCreate {
+            create: true,
+            repo,
+            branch,
+            destination,
+            ..
+        } => {
+            if repo.is_none() {
+                *repo = Some(other.to_string());
+            } else if branch.is_none() {
+                *branch = Some(other.to_string());
+            } else if destination.is_none() {
+                *destination = Some(other.to_string());
+            } else {
+                return Err(ConfigError::ArgIsNotValid(arg.to_string()));
+            }
+            Ok(())
+        }
+        PendingCommand::WorktreeCreate { create: false, .. } => {
+            Err(ConfigError::ArgIsNotValid(arg.to_string()))
         }
         PendingCommand::Delete { path, .. } => {
             if path.is_none() {
@@ -337,9 +463,15 @@ fn take_operand(
 fn finish_command(pending: PendingCommand) -> Result<Command> {
     match pending {
         PendingCommand::Picker => Ok(Command::Picker),
+        PendingCommand::List => Ok(Command::List),
+        PendingCommand::Open { path, workspace_id } => Ok(Command::Open {
+            path: path.ok_or(ConfigError::ArgNotFound)?,
+            workspace_id,
+        }),
         PendingCommand::Clone {
             source,
             destination,
+            add_parent,
         } => {
             let source = source.ok_or(ConfigError::ArgNotFound)?;
             let destination = match destination {
@@ -351,7 +483,25 @@ fn finish_command(pending: PendingCommand) -> Result<Command> {
             Ok(Command::Clone {
                 source,
                 destination,
+                add_parent,
             })
+        }
+        PendingCommand::WorktreeCreate {
+            create: true,
+            repo,
+            branch,
+            destination,
+            new_branch,
+            add_parent,
+        } => Ok(Command::WorktreeCreate {
+            repo: repo.ok_or(ConfigError::ArgNotFound)?,
+            branch: branch.ok_or(ConfigError::ArgNotFound)?,
+            destination: destination.ok_or(ConfigError::ArgNotFound)?,
+            new_branch,
+            add_parent,
+        }),
+        PendingCommand::WorktreeCreate { create: false, .. } => {
+            Err(ConfigError::ArgNotFound)
         }
         PendingCommand::Delete {
             path,

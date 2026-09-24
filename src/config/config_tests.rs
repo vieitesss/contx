@@ -27,7 +27,7 @@ fn resolve_ready(
     vars: &[(&str, String)],
 ) -> super::Result<super::ResolvedConfig> {
     match resolve_startup(args, vars)? {
-        Startup::Ready(resolved) => Ok(resolved),
+        Startup::Ready(resolved) => Ok(*resolved),
         Startup::Help => panic!("expected ready startup, got help"),
     }
 }
@@ -714,7 +714,9 @@ fn help_flags_are_not_errors() {
 
 #[test]
 fn usage_documents_clone_and_delete() {
-    assert!(super::USAGE.contains("clone <source> [destination]"));
+    assert!(
+        super::USAGE.contains("clone [--add-parent] <source> [destination]")
+    );
     assert!(
         super::USAGE
             .contains("delete [--dry-run] [--permanent] [--force] <path>")
@@ -754,6 +756,7 @@ fn clone_omitted_destination_uses_derived_name() {
             Command::Clone {
                 source: source.to_string(),
                 destination: dest.to_string(),
+                add_parent: false,
             },
             "source {source:?}"
         );
@@ -779,6 +782,7 @@ fn clone_parses_source_and_destination() {
         Command::Clone {
             source: "git@host:src.git".to_string(),
             destination: "dest".to_string(),
+            add_parent: false,
         }
     );
 }
@@ -806,6 +810,7 @@ fn clone_keeps_global_flags() {
         Command::Clone {
             source: "src".to_string(),
             destination: "dest".to_string(),
+            add_parent: false,
         }
     );
 
@@ -816,6 +821,72 @@ fn clone_keeps_global_flags() {
     .unwrap();
     assert_eq!(after.multiplexer, Multiplexer::Herdr);
     assert_eq!(after.command, before.command);
+}
+
+#[test]
+fn machine_commands_parse_and_reject_missing_operands_or_unrelated_flags() {
+    let d = TempDir::new();
+    let vars = home_env(d.path());
+    let listed = resolve_ready(&["list", "--json"], &vars).unwrap();
+    assert!(listed.json);
+    assert_eq!(listed.command, Command::List);
+    assert_eq!(
+        resolve_ready(
+            &["--json", "open", "~/proj", "--workspace-id", "w1"],
+            &vars
+        )
+        .unwrap()
+        .command,
+        Command::Open {
+            path: "~/proj".into(),
+            workspace_id: Some("w1".into())
+        }
+    );
+    assert_eq!(
+        resolve_ready(
+            &[
+                "worktree",
+                "create",
+                "--new-branch",
+                "--add-parent",
+                "repo",
+                "feature",
+                "dest"
+            ],
+            &vars
+        )
+        .unwrap()
+        .command,
+        Command::WorktreeCreate {
+            repo: "repo".into(),
+            branch: "feature".into(),
+            destination: "dest".into(),
+            new_branch: true,
+            add_parent: true
+        }
+    );
+    assert_eq!(
+        resolve_ready(&["clone", "--add-parent", "src", "dest"], &vars)
+            .unwrap()
+            .command,
+        Command::Clone {
+            source: "src".into(),
+            destination: "dest".into(),
+            add_parent: true
+        }
+    );
+    for args in [
+        vec!["--json"],
+        vec!["open"],
+        vec!["list", "extra"],
+        vec!["worktree", "create", "repo", "branch"],
+        vec!["worktree", "unknown"],
+        vec!["clone", "--new-branch", "src"],
+        vec!["open", "--workspace-id", "", "path"],
+        vec!["delete", "--add-parent", "path"],
+    ] {
+        assert!(resolve_startup(&args, &vars).is_err(), "{args:?}");
+    }
 }
 
 #[test]

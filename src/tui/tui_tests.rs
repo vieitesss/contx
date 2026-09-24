@@ -745,6 +745,7 @@ fn tui_for_repo(repo: &Path) -> Tui {
         candidates: vec![SessionCandidate::new(path, group)],
         multiplexer: Multiplexer::Auto,
         command: Command::Picker,
+        json: false,
         permanent_delete: false,
         clone: crate::config::CloneSettings::default(),
         config_path: "/tmp/contx-test.toml".into(),

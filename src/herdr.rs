@@ -250,11 +250,21 @@ enum Choice {
 /// Policy-level failure after the CLI JSON boundary.
 #[derive(Debug)]
 pub enum OpenError {
-    CanonicalizeFailed { candidate: String },
+    CanonicalizeFailed {
+        candidate: String,
+    },
     InvalidCandidate(String),
     Cli(HerdrError),
-    Disappeared { workspace_id: String },
-    NotATty { ids: Vec<String> },
+    Disappeared {
+        workspace_id: String,
+    },
+    NotATty {
+        ids: Vec<String>,
+    },
+    WorkspaceNotMatching {
+        workspace_id: String,
+        ids: Vec<String>,
+    },
     InvalidChoice,
     MalformedResult,
     Io(io::Error),
@@ -278,6 +288,11 @@ impl fmt::Display for OpenError {
             Self::NotATty { ids } => write!(
                 f,
                 "multiple Herdr workspaces match ({}); not a TTY so cannot ask",
+                ids.join(", ")
+            ),
+            Self::WorkspaceNotMatching { workspace_id, ids } => write!(
+                f,
+                "Herdr workspace `{workspace_id}` does not match this path (matching IDs: {}); not creating",
                 ids.join(", ")
             ),
             Self::InvalidChoice => {
@@ -431,6 +446,17 @@ fn open_with(
     env: &dyn Fn(&str) -> Option<OsString>,
     chooser: &mut dyn FnMut(&str, &[String]) -> Result<Choice, OpenError>,
 ) -> Result<Option<Activation>, OpenError> {
+    open_with_selection(candidate, runner, env, None, chooser)
+}
+
+#[allow(clippy::type_complexity)]
+fn open_with_selection(
+    candidate: &str,
+    runner: &mut dyn CommandRunner,
+    env: &dyn Fn(&str) -> Option<OsString>,
+    selected_id: Option<&str>,
+    chooser: &mut dyn FnMut(&str, &[String]) -> Result<Choice, OpenError>,
+) -> Result<Option<Activation>, OpenError> {
     let canonical: PathBuf =
         Path::new(candidate).canonicalize().map_err(|_| {
             OpenError::CanonicalizeFailed {
@@ -442,6 +468,17 @@ fn open_with(
     let label = label_for(candidate, env)?;
     let listed = pane_list(runner, env).map_err(OpenError::Cli)?;
     let ids = matching_ids(&listed, &canonical)?;
+    if let Some(id) = selected_id
+        && !ids.iter().any(|matching| matching == id)
+    {
+        return Err(OpenError::WorkspaceNotMatching {
+            workspace_id: id.to_string(),
+            ids,
+        });
+    }
+    if let Some(id) = selected_id {
+        return focus_observed(runner, env, id);
+    }
     match ids.as_slice() {
         [] => {
             let cwd = canonical.display().to_string();
@@ -469,6 +506,22 @@ pub fn open(candidate: &str) -> Result<Option<Activation>, OpenError> {
         &|name| std::env::var_os(name),
         &mut production_choose,
     )
+}
+
+/// Noninteractive activation: never prompts when several workspaces match.
+/// An explicit ID must belong to a currently matching workspace.
+pub(crate) fn open_noninteractive(
+    candidate: &str,
+    selected_id: Option<&str>,
+) -> Result<Activation, OpenError> {
+    open_with_selection(
+        candidate,
+        &mut ProductionRunner,
+        &|name| std::env::var_os(name),
+        selected_id,
+        &mut |_, ids| Err(OpenError::NotATty { ids: ids.to_vec() }),
+    )?
+    .ok_or(OpenError::InvalidChoice)
 }
 
 #[cfg(test)]

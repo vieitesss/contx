@@ -4,7 +4,7 @@ use std::{
     fmt,
     io::{self, IsTerminal, Write},
     path::Path,
-    process::Command,
+    process::{Command, Stdio},
 };
 
 use crate::config::{ConfigError, ResolvedConfig};
@@ -14,6 +14,7 @@ use crate::config::{ConfigError, ResolvedConfig};
 pub struct CloneOutcome {
     pub dest: String,
     pub config_updated: bool,
+    pub discoverable: bool,
 }
 
 /// Clone failure. A surviving destination is never deleted.
@@ -103,7 +104,9 @@ pub(crate) trait Interact {
     fn confirm_add_path(&mut self, parent: &str) -> io::Result<bool>;
 }
 
-struct ProductionGit;
+struct ProductionGit {
+    json: bool,
+}
 
 impl GitClone for ProductionGit {
     fn clone_repo(
@@ -111,11 +114,13 @@ impl GitClone for ProductionGit {
         source: &str,
         dest: &str,
     ) -> io::Result<GitCloneStatus> {
-        let status = Command::new("git")
-            .arg("clone")
-            .arg(source)
-            .arg(dest)
-            .status()?;
+        let mut command = Command::new("git");
+        command.arg("clone").arg(source).arg(dest);
+        if self.json {
+            command.stdout(Stdio::from(io::stderr()));
+            command.env("GIT_TERMINAL_PROMPT", "0");
+        }
+        let status = command.status()?;
         if status.success() {
             Ok(GitCloneStatus::Success)
         } else if status.code().is_none() {
@@ -253,20 +258,23 @@ pub fn run(
     config: &ResolvedConfig,
     source: &str,
     destination: &str,
+    add_parent: bool,
 ) -> Result<CloneOutcome, CloneError> {
     let cwd = env::current_dir().map_err(CloneError::Io)?;
-    run_with(
+    run_with_options(
         config,
         source,
         destination,
         &cwd,
         &|name| env::var_os(name),
-        &mut ProductionGit,
+        &mut ProductionGit { json: config.json },
         &mut ProductionInteract,
         &mut io::stderr(),
+        add_parent,
     )
 }
 
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_with(
     config: &ResolvedConfig,
@@ -278,6 +286,31 @@ pub(crate) fn run_with(
     interact: &mut dyn Interact,
     stderr: &mut dyn Write,
 ) -> Result<CloneOutcome, CloneError> {
+    run_with_options(
+        config,
+        source,
+        destination,
+        cwd,
+        env,
+        git,
+        interact,
+        stderr,
+        false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_with_options(
+    config: &ResolvedConfig,
+    source: &str,
+    destination: &str,
+    cwd: &Path,
+    env: &dyn Fn(&str) -> Option<OsString>,
+    git: &mut dyn GitClone,
+    interact: &mut dyn Interact,
+    stderr: &mut dyn Write,
+    add_parent: bool,
+) -> Result<CloneOutcome, CloneError> {
     let abs = resolve_destination(destination, Some(cwd), env)?;
     if dest_exists(&abs) {
         return Err(CloneError::DestExists(abs));
@@ -287,8 +320,10 @@ pub(crate) fn run_with(
     let covered = config
         .destination_covered(&abs, env)
         .map_err(CloneError::Config)?;
-    let mut want_write = false;
-    if interact.is_interactive()
+    let mut want_write = add_parent && !covered;
+    if !add_parent
+        && !config.json
+        && interact.is_interactive()
         && !covered
         && let Some(parent) = Path::new(&abs).parent()
         && !parent.as_os_str().is_empty()
@@ -312,12 +347,14 @@ pub(crate) fn run_with(
         return Ok(CloneOutcome {
             dest: abs,
             config_updated: false,
+            discoverable: covered,
         });
     }
     match config.append_parent_to_paths(&abs, env) {
         Ok(()) => Ok(CloneOutcome {
             dest: abs,
             config_updated: true,
+            discoverable: true,
         }),
         Err(cause) => Err(CloneError::Partial { dest: abs, cause }),
     }

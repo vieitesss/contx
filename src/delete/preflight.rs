@@ -1,4 +1,10 @@
-use std::{ffi::OsString, fmt, fs, path::Path, process::Command};
+use serde::Serialize;
+use std::{
+    ffi::OsString,
+    fmt, fs, io,
+    path::Path,
+    process::{Command, Stdio},
+};
 
 use crate::config::{SessionCandidate, identity};
 use crate::mux::PaneCwdOutcome;
@@ -9,7 +15,8 @@ use super::{
 };
 
 /// Overridable preflight findings. Acceptance never bypasses a blocker.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Warning {
     NonemptyDirectory,
     Staged,
@@ -29,7 +36,8 @@ pub enum Warning {
 }
 
 /// Hard blockers. `--force` cannot bypass these.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Blocker {
     NotCandidate,
     Disappeared,
@@ -44,14 +52,15 @@ pub enum Blocker {
     GitWorktreeRefused { reason: String },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum RemoteVerification {
     NotPerformed,
     Performed,
     Failed,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Preflight {
     pub path: String,
     pub target: Option<DeleteTarget>,
@@ -181,16 +190,20 @@ pub(crate) trait Fetcher {
     fn fetch_all_prune(&mut self, root: &str) -> FetchResult;
 }
 
-pub(crate) struct ProductionFetcher;
+pub(crate) struct ProductionFetcher(pub bool);
 
 impl Fetcher for ProductionFetcher {
     fn fetch_all_prune(&mut self, root: &str) -> FetchResult {
-        match Command::new("git")
+        let mut command = Command::new("git");
+        command
             .arg("-C")
             .arg(root)
-            .args(["fetch", "--all", "--prune"])
-            .status()
-        {
+            .args(["fetch", "--all", "--prune"]);
+        if self.0 {
+            command.stdout(Stdio::from(io::stderr()));
+            command.env("GIT_TERMINAL_PROMPT", "0");
+        }
+        match command.status() {
             Ok(s) if s.success() => FetchResult::Success,
             Ok(s) if s.code().is_none() => FetchResult::Cancelled,
             _ => FetchResult::Failed,

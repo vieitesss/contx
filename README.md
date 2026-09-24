@@ -1,6 +1,6 @@
 # contx
 
-`contx` is a terminal picker for project directories. It lists **session candidates** from your config, lets you fuzzy-search them with Git context, and activates the matching **project target**: a tmux **session** or a Herdr **workspace**. It can also clone a Git source into a new directory, create an empty directory, and delete an existing session candidate.
+`contx` is a terminal picker and noninteractive CLI for project directories. It lists **session candidates** from your config, lets you fuzzy-search them with Git context, and activates the matching **project target**: a tmux **session** or a Herdr **workspace**. It can also clone a Git source, create a linked Git worktree, create an empty directory in the picker, and delete an existing session candidate. For agent workflows, see [SKILL.md](SKILL.md).
 
 Candidate discovery, Git inspection, and the picker do not depend on which multiplexer you use. Activation talks to one backend only. `contx` does not list or manage Herdr panes, tabs, or agents, and it does not control one multiplexer from the other.
 
@@ -62,17 +62,21 @@ The repo `config.toml` is a local example. It is not installed for you.
 
 ```
 contx [options]
-contx [options] clone <source> [destination]
+contx [options] list
+contx [options] open [--workspace-id <id>] <path>
+contx [options] clone [--add-parent] <source> [destination]
+contx [options] worktree create [--new-branch] [--add-parent] <repo> <branch> <destination>
 contx [options] delete [--dry-run] [--permanent] [--force] <path>
 
   -c, --config-file <path>         configuration file
   --multiplexer auto|tmux|herdr    multiplexer (default: auto)
+  --json                           structured output for non-picker commands
   -h, --help                       show this help
 ```
 
 CLI `--multiplexer` overrides the config file.
 
-With no subcommand, `contx` opens the picker. `clone` and `delete` run without opening it.
+With no subcommand, `contx` opens the picker. Other commands do not open it. `--json` requires a subcommand and reserves stdout for one JSON object (Git progress goes to stderr). Errors write `{"error":"..."}` as the last stderr line and exit nonzero; blocked deletes additionally include `preflight`. Git may have written progress to stderr first. JSON clone, open, and delete never prompt via contx, even when run from a TTY. Git/SSH credentials must be set up for unattended use.
 
 `auto` uses the multiplexer that owns this terminal. Nested tmux-inside-Herdr prefers tmux; Herdr-inside-tmux prefers Herdr. If that cannot be decided, `contx` refuses and asks you to pass `--multiplexer tmux` or `--multiplexer herdr`. It never starts or attaches a multiplexer server, and it never falls back to the other backend.
 
@@ -85,6 +89,21 @@ Delete flags:
 - `--force`: skip confirmations and accept overridable warnings. Does not bypass hard blockers, does not select permanent deletion, and is not a trash-failure fallback.
 
 `--force` and `--dry-run` together are invalid (either order).
+
+## Noninteractive project workflow
+
+```sh
+contx --json list
+contx --json clone --add-parent <source> /absolute/path/to/new-repo
+contx --json worktree create --new-branch --add-parent /absolute/path/to/repo feature/my-task /absolute/path/to/new-worktree
+contx --json --multiplexer herdr open /absolute/path/to/new-worktree
+```
+
+`list` returns `{"candidates":[{"path":...,"group":...,"from_home_discovery":...}]}` from current configuration. `open` requires an existing current candidate (relative paths resolve against the process cwd); it returns a tmux `session` or Herdr `workspace_id` along with the activated `path` and `multiplexer`. It focuses an existing matching project target or creates one at that path. Herdr matching uses live pane paths: if several workspaces match, the CLI **fails without prompting or creating** and returns `workspace_ids` in the JSON error; retry with `--workspace-id ID` only after selecting a listed ID. An ID that no longer matches the path is refused. The picker still offers its interactive choice. Activating a project does not change the calling shell's cwd or move existing agent processes.
+
+`worktree create` takes an existing repository-root candidate, a **local** branch, and a new destination. Without `--new-branch` the branch must already exist; with it, the branch must not exist and is created from the selected repo's HEAD. Git creates the linked checkout using `git worktree add` (non-force); creation alone does not focus a workspace. Destinations, including clone destinations, must not already exist. Relative destinations resolve against the process cwd. `--add-parent` explicitly adds an uncovered destination parent to the config **after** successful creation so the new checkout is discoverable by `list`, `open`, and `delete`. Without it, noninteractive creation leaves config unchanged; JSON outcomes report `discoverable` and `config_updated`. A Git success followed by a config write failure leaves the created directory in place and reports its path. A failed/interrupted Git operation also leaves any surviving destination untouched.
+
+For deletion, `contx --json delete --dry-run <path>` returns a `preflight` object with `target` (including class and strategy), `warnings`, `blockers`, and `remote_verification`. Inspect it before considering `contx --json delete --force <path>`: `--force` accepts warnings but never bypasses hard blockers or opts into permanent deletion. JSON deletion without `--force` returns a confirmation-required error instead of prompting. Only a standalone-repo live delete fetches remotes; dry-run never does. Do not run from inside a target being deleted; active project panes can block it.
 
 ## Picker
 
@@ -119,7 +138,7 @@ Enter on a folded header never activates a project. Each candidate can show Git 
 ## Clone
 
 ```
-contx clone <source> [destination]
+contx clone [--add-parent] <source> [destination]
 ```
 
 `<source>` is anything `git clone` accepts, including SSH. `contx` runs `git clone <source> <destination>` with no extra flags (no branch, depth, or submodule options). When destination is omitted, `<destination>` is the repository name derived from the clone source (same rule `git clone` uses), resolved from the process working directory. An explicit destination behaves as before. Git uses the terminal for auth and output.
@@ -128,7 +147,7 @@ The destination must not already exist. Relatives on the CLI are resolved from t
 
 Failure or interruption leaves any surviving destination in place and does not change the config. If the clone succeeds but a requested config update fails, the destination is kept and the command still fails.
 
-When stdin is a TTY and the destination is not already covered, `contx` asks whether to add the destination’s parent to `paths`. The question is asked before `git clone`; the file is written only after a successful clone. Declining still clones.
+When stdin is a TTY (outside JSON mode) and the destination is not already covered, `contx` asks whether to add the destination’s parent to `paths`. The question is asked before `git clone`; the file is written only after a successful clone. Declining still clones. `--add-parent` requests the same update without prompting, including in JSON mode.
 
 ## New directory
 
@@ -158,7 +177,7 @@ Active-path checks use the process working directory and pane working directorie
 
 ## Activation
 
-After Enter on a directory:
+After Enter on a directory (or `contx open <path>`):
 
 - **tmux:** switch to the session named from that path. If none exists, create one there and switch.
 - **Herdr:** focus a workspace whose live pane working directory matches that path. If none exists, create one at the path (`--cwd`, `--label`, `--focus`). The label uses the same rules as tmux session names and is never used to find an existing workspace.
@@ -191,7 +210,7 @@ command = "contx"
 
 ## Limitations
 
-- No Herdr pane, tab, or agent management in the TUI, and no control of one multiplexer from the other. Clone and delete act on session candidates (including Git linked worktrees), not on Herdr worktrees.
+- No Herdr pane, tab, or agent management in the TUI, and no control of one multiplexer from the other. CLI worktree creation uses Git; it does not attach Herdr worktree metadata. Clone and delete act on session candidates (including Git linked worktrees), not on Herdr worktrees.
 - Herdr matching uses live pane working directories, not labels or stored IDs. A shell that `cd`s away can make the original workspace unmatchable (a later pick may create a duplicate); a pane that `cd`s into another project can reuse that other workspace.
 - Workspace IDs are not persisted. Disappeared targets are not recreated.
 - No silent fallback between tmux and Herdr; no server start or attach. If `auto` picks the wrong nested multiplexer, pass `--multiplexer` explicitly.

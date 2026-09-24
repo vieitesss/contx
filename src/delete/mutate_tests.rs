@@ -1,5 +1,5 @@
 use super::{
-    Confirm, DeleteOutcome, TrashOps, WorktreeOps, run_with,
+    Confirm, DeleteOutcome, TrashOps, WorktreeOps, run_with, run_with_options,
     trash_confirm_prompt, worktree_confirm_prompt,
 };
 use crate::{
@@ -27,6 +27,7 @@ fn cfg(candidates: Vec<SessionCandidate>) -> ResolvedConfig {
         candidates,
         multiplexer: Multiplexer::Auto,
         command: Command::Picker,
+        json: false,
         permanent_delete: false,
         clone: crate::config::CloneSettings::default(),
         config_path: "/tmp/contx-test.toml".into(),
@@ -242,6 +243,63 @@ fn exec(
         &mut out,
         &mut err,
     )
+}
+
+#[test]
+fn machine_delete_dry_run_is_structured_and_mutation_requires_force_even_with_tty()
+ {
+    let d = TempDir::new();
+    let dir = d.child("plain");
+    let config = cfg(vec![cand(&dir)]);
+    let mut trash = FakeTrash::ok();
+    let mut wt = FakeWorktree {
+        calls: vec![],
+        fail: false,
+    };
+    let mut confirm = ScriptConfirm::yes();
+    let mut out = Vec::new();
+    let mut err = Vec::new();
+    let path = dir.to_str().unwrap();
+    let outcome = run_with_options(
+        &config,
+        &req(path, true, false, false),
+        d.path(),
+        d.path(),
+        &|_| None,
+        PaneCwdOutcome::Skipped,
+        &mut SkipFetch,
+        &mut trash,
+        &mut wt,
+        &mut confirm,
+        &mut out,
+        &mut err,
+        true,
+    )
+    .unwrap();
+    let DeleteOutcome::DryRun(report) = outcome else {
+        panic!("expected dry run")
+    };
+    assert_eq!(report.target.unwrap().path, path);
+    assert!(out.is_empty());
+    let failure = run_with_options(
+        &config,
+        &req(path, false, false, false),
+        d.path(),
+        d.path(),
+        &|_| None,
+        PaneCwdOutcome::Skipped,
+        &mut SkipFetch,
+        &mut trash,
+        &mut wt,
+        &mut confirm,
+        &mut out,
+        &mut err,
+        true,
+    )
+    .unwrap_err();
+    assert!(matches!(failure, DeleteError::ConfirmationRequired));
+    assert_eq!(confirm.trash_calls, 0);
+    assert!(dir.exists());
 }
 
 #[test]
@@ -477,6 +535,46 @@ fn trash_fail_interactive_decline_leaves_path() {
     .unwrap_err();
     assert!(matches!(err, DeleteError::TrashFailed { .. }));
     assert!(dir.exists());
+}
+
+#[test]
+fn json_force_trash_failure_never_prompts_or_permanently_deletes() {
+    let d = TempDir::new();
+    let dir = d.child("plain");
+    fs::write(dir.join("f"), "x").unwrap();
+    let config = cfg(vec![cand(&dir)]);
+    let mut trash = FakeTrash::fail();
+    let mut wt = FakeWorktree {
+        calls: vec![],
+        fail: false,
+    };
+    // A JSON invocation may run with stdin attached to a TTY, but must remain
+    // non-interactive after trash fails.
+    let mut confirm = ScriptConfirm::yes();
+    let mut out = Vec::new();
+    let mut err = Vec::new();
+    let failure = run_with_options(
+        &config,
+        &req(dir.to_str().unwrap(), false, false, true),
+        d.path(),
+        d.path(),
+        &|_| None,
+        PaneCwdOutcome::Skipped,
+        &mut SkipFetch,
+        &mut trash,
+        &mut wt,
+        &mut confirm,
+        &mut out,
+        &mut err,
+        true,
+    )
+    .unwrap_err();
+
+    assert!(matches!(failure, DeleteError::TrashFailed { .. }));
+    assert!(dir.exists());
+    assert!(dir.join("f").exists());
+    assert_eq!(confirm.permanent_calls, 0);
+    assert_eq!(trash.calls, [dir.to_str().unwrap()]);
 }
 
 #[test]
