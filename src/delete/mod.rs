@@ -1,3 +1,4 @@
+use serde::Serialize;
 use std::{ffi::OsString, fmt, fs, io, path::Path};
 
 mod mutate;
@@ -12,7 +13,8 @@ pub(crate) use preflight::{
 
 /// Classification of the exact candidate path. Never follows a symlink
 /// and never widens a nested candidate to an enclosing Git root.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum DeleteClass {
     Symlink,
     LinkedWorktree,
@@ -21,7 +23,8 @@ pub enum DeleteClass {
 }
 
 /// How the exact path will be deleted. Linked worktrees always use Git.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum DeleteStrategy {
     Trash,
     Permanent,
@@ -29,7 +32,7 @@ pub enum DeleteStrategy {
 }
 
 /// Planned deletion of one session candidate. No filesystem mutation.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DeleteTarget {
     /// Catalog spelling of the matched candidate, not a widened Git root.
     pub path: String,
