@@ -5,6 +5,47 @@ use super::{
     scan_upstream, scan_worktree, scan_worktree_with, start_poll_with,
 };
 use crate::utils::test_utils::TempDir;
+
+#[test]
+fn gh_pr_lookup_uses_supported_head_filter_and_exact_identity() {
+    assert_eq!(
+        super::pull_request_args("123"),
+        [
+            "pr",
+            "list",
+            "--head",
+            "123",
+            "--state",
+            "all",
+            "--json",
+            "number,state,headRepositoryOwner,headRefName"
+        ]
+    );
+    let json = r#"[{"number":1,"state":"OPEN","headRepositoryOwner":{"login":"other"},"headRefName":"topic"},{"number":42,"state":"MERGED","headRepositoryOwner":{"login":"example"},"headRefName":"topic"}]"#;
+    assert_eq!(
+        super::parse_pull_request(json, "example", "topic").unwrap(),
+        Some(super::PullRequest {
+            number: 42,
+            state: super::PullRequestState::Merged
+        })
+    );
+    assert_eq!(super::parse_pull_request(json, "example", "123"), Ok(None));
+    for remote in [
+        "git@github.com:example/project.git",
+        "https://github.com/example/project.git",
+        "ssh://git@github.com/example/project.git",
+    ] {
+        assert_eq!(super::github_remote_owner(remote), Some("example"));
+    }
+    assert_eq!(
+        super::github_remote_owner("https://gitlab.com/example/project"),
+        None
+    );
+    assert_eq!(
+        super::github_remote_owner("https://github.com/example"),
+        None
+    );
+}
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     io::{self, ErrorKind},
@@ -12,11 +53,231 @@ use std::{
     process::Command,
     sync::{
         Arc, Condvar, Mutex,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         mpsc,
     },
     time::{Duration, Instant},
 };
+
+#[test]
+fn pr_parser_accepts_real_gh_open_json() {
+    let json = r#"[{"number":12,"state":"OPEN","headRepositoryOwner":{"login":"alice"},"headRefName":"feat/demo"}]"#;
+    assert_eq!(
+        super::parse_pull_request(json, "alice", "feat/demo").unwrap(),
+        Some(super::PullRequest {
+            number: 12,
+            state: super::PullRequestState::Open,
+        })
+    );
+}
+
+#[test]
+fn pr_parser_accepts_real_gh_closed_json() {
+    let json = r#"[{"number":13,"state":"CLOSED","headRepositoryOwner":{"login":"alice"},"headRefName":"topic"}]"#;
+    assert_eq!(
+        super::parse_pull_request(json, "alice", "topic").unwrap(),
+        Some(super::PullRequest {
+            number: 13,
+            state: super::PullRequestState::Closed,
+        })
+    );
+}
+
+#[test]
+fn pr_parser_accepts_real_gh_merged_json() {
+    let json = r#"[{"number":14,"state":"MERGED","headRepositoryOwner":{"login":"alice"},"headRefName":"topic"}]"#;
+    assert_eq!(
+        super::parse_pull_request(json, "alice", "topic").unwrap(),
+        Some(super::PullRequest {
+            number: 14,
+            state: super::PullRequestState::Merged,
+        })
+    );
+}
+
+#[test]
+fn pr_parser_rejects_other_fork_owner_even_with_matching_branch() {
+    let json = r#"[{"number":14,"state":"OPEN","headRepositoryOwner":{"login":"fork"},"headRefName":"topic"}]"#;
+    assert_eq!(
+        super::parse_pull_request(json, "upstream", "topic"),
+        Ok(None)
+    );
+}
+
+#[test]
+fn pr_parser_matches_numeric_branch_as_text_not_pr_number() {
+    let json = r#"[{"number":123,"state":"OPEN","headRepositoryOwner":{"login":"alice"},"headRefName":"topic"},{"number":47,"state":"MERGED","headRepositoryOwner":{"login":"alice"},"headRefName":"123"}]"#;
+    assert_eq!(
+        super::parse_pull_request(json, "alice", "123").unwrap(),
+        Some(super::PullRequest {
+            number: 47,
+            state: super::PullRequestState::Merged,
+        })
+    );
+}
+
+#[test]
+fn pr_parser_rejects_empty_missing_and_malformed_json() {
+    assert_eq!(super::parse_pull_request("[]", "alice", "topic"), Ok(None));
+    assert!(super::parse_pull_request("{", "alice", "topic").is_err());
+    assert!(
+        super::parse_pull_request(
+            r#"[{"number":4,"state":"OPEN","headRefName":"topic"}]"#,
+            "alice",
+            "topic",
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn valid_nonmatching_pr_list_is_missing_not_transient() {
+    let json = br#"[{"number":14,"state":"OPEN","headRepositoryOwner":{"login":"fork"},"headRefName":"topic"}]"#;
+    assert!(matches!(
+        super::classify_pull_request_output(json, "upstream", "topic"),
+        super::PullRequestLookup::Missing
+    ));
+}
+
+#[test]
+fn malformed_nonempty_pr_list_is_transient_not_missing() {
+    let json = br#"[{"number":14,"state":"OPEN","headRefName":"topic"}]"#;
+    assert!(matches!(
+        super::classify_pull_request_output(json, "upstream", "topic"),
+        super::PullRequestLookup::Transient
+    ));
+}
+
+#[test]
+fn pr_errors_distinguish_missing_from_transient_failures() {
+    assert!(matches!(
+        super::classify_pull_request_error("no pull requests found"),
+        super::PullRequestLookup::Missing
+    ));
+    assert!(matches!(
+        super::classify_pull_request_error("authentication failed"),
+        super::PullRequestLookup::Transient
+    ));
+}
+
+#[test]
+fn gh_nonzero_exit_is_a_transient_failure() {
+    let tmp = TempDir::new();
+    let result = super::run_gh_command(
+        "sh",
+        tmp.path().to_str().unwrap(),
+        &["-c", "echo authentication failed >&2; exit 1"],
+        Duration::from_secs(1),
+    );
+    assert!(matches!(
+        super::classify_pull_request_error(&result.unwrap_err()),
+        super::PullRequestLookup::Transient
+    ));
+}
+
+#[test]
+fn gh_timeout_kills_child_and_is_transient() {
+    let tmp = TempDir::new();
+    let result = super::run_gh_command(
+        "sh",
+        tmp.path().to_str().unwrap(),
+        &["-c", "exec sleep 3"],
+        Duration::from_millis(30),
+    );
+    assert!(result.is_err());
+    assert!(matches!(
+        super::classify_pull_request_error(&result.unwrap_err()),
+        super::PullRequestLookup::Transient
+    ));
+}
+
+#[test]
+fn pr_cache_reuses_hit_and_miss_until_ttl_then_refreshes() {
+    let cache = Mutex::new(HashMap::new());
+    let now = Instant::now();
+    let found = super::PullRequestLookup::Found(super::PullRequest {
+        number: 9,
+        state: super::PullRequestState::Open,
+    });
+    let calls = AtomicUsize::new(0);
+    let lookup = || {
+        calls.fetch_add(1, Ordering::SeqCst);
+        found
+    };
+    assert!(matches!(
+        super::pull_request_cached_with(&cache, "/repo", "topic", now, lookup),
+        super::PullRequestLookup::Found(_)
+    ));
+    let cached = super::pull_request_cached_with(
+        &cache,
+        "/repo",
+        "topic",
+        now + Duration::from_secs(59),
+        || panic!("cache hit should not spawn gh"),
+    );
+    assert!(matches!(cached, super::PullRequestLookup::Found(_)));
+    assert!(matches!(
+        super::pull_request_cached_with(
+            &cache,
+            "/repo",
+            "topic",
+            now + Duration::from_secs(60),
+            || super::PullRequestLookup::Missing,
+        ),
+        super::PullRequestLookup::Missing
+    ));
+    assert!(matches!(
+        super::pull_request_cached_with(
+            &cache,
+            "/repo",
+            "topic",
+            now + Duration::from_secs(61),
+            || panic!("missing PR should remain cached for 60 seconds"),
+        ),
+        super::PullRequestLookup::Missing
+    ));
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn pr_cache_is_keyed_by_root_and_branch_and_transient_retries_early() {
+    let cache = Mutex::new(HashMap::new());
+    let now = Instant::now();
+    let transient = super::PullRequestLookup::Transient;
+    super::pull_request_cached_with(&cache, "/fork", "123", now, || transient);
+    assert!(matches!(
+        super::pull_request_cached_with(
+            &cache,
+            "/fork",
+            "123",
+            now + Duration::from_secs(4),
+            || panic!("transient should remain cached for five seconds")
+        ),
+        super::PullRequestLookup::Transient
+    ));
+    assert!(matches!(
+        super::pull_request_cached_with(
+            &cache,
+            "/fork",
+            "123",
+            now + Duration::from_secs(5),
+            || super::PullRequestLookup::Missing
+        ),
+        super::PullRequestLookup::Missing
+    ));
+    assert!(matches!(
+        super::pull_request_cached_with(&cache, "/other", "123", now, || {
+            transient
+        }),
+        super::PullRequestLookup::Transient
+    ));
+    assert!(matches!(
+        super::pull_request_cached_with(&cache, "/fork", "topic", now, || {
+            transient
+        }),
+        super::PullRequestLookup::Transient
+    ));
+}
 
 #[test]
 fn fmt_count_units_and_thresholds() {
@@ -222,9 +483,11 @@ fn instant_ops(
     scan: Arc<dyn Fn(&str) -> WorkState + Send + Sync>,
 ) -> GitOps {
     GitOps {
-        resolve,
+        resolve: Arc::new(move |c| (resolve(c), Head::Absent)),
         scan: Arc::new(move |r| scanned(scan(r))),
+        pr: Arc::new(|_, _| super::PullRequestLookup::Missing),
         between_cycles: Arc::new(|| {}),
+        cycle_delay: Duration::ZERO,
     }
 }
 
@@ -242,12 +505,14 @@ fn gated_ops(
     gate: &Arc<Gate>,
 ) -> GitOps {
     GitOps {
-        resolve,
+        resolve: Arc::new(move |c| (resolve(c), Head::Absent)),
         scan: Arc::new(move |r| scanned(scan(r))),
+        pr: Arc::new(|_, _| super::PullRequestLookup::Missing),
         between_cycles: Arc::new({
             let gate = Arc::clone(gate);
             move || gate.wait()
         }),
+        cycle_delay: Duration::ZERO,
     }
 }
 
@@ -426,6 +691,8 @@ fn failed_nonrepo_and_scan_failure_stay_distinct() {
             state: WorkState::Failed,
             head: Head::Absent,
             upstream: Upstream::Absent,
+            pull_request: None,
+            pull_request_checked: false,
         }
     );
     assert_eq!(
@@ -437,6 +704,8 @@ fn failed_nonrepo_and_scan_failure_stay_distinct() {
             state: WorkState::Clean,
             head: Head::Absent,
             upstream: Upstream::Absent,
+            pull_request: None,
+            pull_request_checked: false,
         }
     );
     assert_eq!(
@@ -448,6 +717,8 @@ fn failed_nonrepo_and_scan_failure_stay_distinct() {
             state: WorkState::Failed,
             head: Head::Absent,
             upstream: Upstream::Absent,
+            pull_request: None,
+            pull_request_checked: false,
         }
     );
 }
@@ -1165,6 +1436,8 @@ fn known_with(
     }
 }
 
+        pull_request: None,
+        pull_request_checked: false,
 fn known(root: Option<&str>, state: WorkState) -> CandidateState {
     known_with(root, state, Upstream::Absent)
 }
@@ -1830,3 +2103,9 @@ fn git_states_retain_paths_drops_survivors_only() {
     assert!(states.get("/a").is_some());
     assert!(states.get("/b").is_none());
 }
+            pull_request: None,
+            pull_request_checked: false,
+            pull_request: None,
+            pull_request_checked: false,
+            pull_request: None,
+            pull_request_checked: false,
