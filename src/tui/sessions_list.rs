@@ -17,8 +17,8 @@ use crate::{
     theme::Theme,
     tui::{
         git::{
-            CandidateState, GitStates, Head, Upstream, WorkState,
-            measurable_texts,
+            CandidateState, GitStates, Head, PullRequestState, Upstream,
+            WorkState, measurable_texts,
         },
         selection::Selection,
     },
@@ -448,13 +448,16 @@ pub(crate) fn git_spans(
         };
         Span::styled(work_icon(linked), icon_style(icon_color))
     };
-    match state {
+    let mut content = match state {
         None => vec![Span::styled(
             "…",
             Style::new().fg(theme.comment).add_modifier(Modifier::DIM),
         )],
         Some(s) if s.state == WorkState::Failed => {
-            vec![Span::styled("\u{f467}", icon_style(theme.red))]
+            let name = s.root.as_ref().and_then(|_| head_name(&s.head));
+            let mut spans = icon_with_head(s.linked, name, inner_w, theme);
+            spans[0] = Span::styled("\u{f467}", icon_style(theme.red));
+            spans
         }
         Some(s) if s.root.is_none() => vec![],
         Some(s) => {
@@ -468,6 +471,12 @@ pub(crate) fn git_spans(
             let name = head_name(&s.head);
             let head_extra = name.map(|n| 1 + n.chars().count()).unwrap_or(0);
             match s.state {
+                // Identity-only partial from the resolve lane:
+                // the name stands alone until the scan lands,
+                // and the PR badge may still join it below.
+                WorkState::Pending => {
+                    icon_with_head(s.linked, name, inner_w, theme)
+                }
                 WorkState::Clean => append_upstream(
                     icon_with_head(s.linked, name, inner_w, theme),
                     s.upstream,
@@ -529,7 +538,23 @@ pub(crate) fn git_spans(
                 WorkState::Failed => vec![icon_of(s.linked)],
             }
         }
+    };
+    if let Some(pr) = state.and_then(|s| s.pull_request) {
+        let state = match pr.state {
+            PullRequestState::Open => "OPEN",
+            PullRequestState::Closed => "CLOSED",
+            PullRequestState::Merged => "MERGED",
+        };
+        let badge = format!(" #{} {state}", pr.number);
+        if status_width(&content) + badge.chars().count() <= inner_w {
+            content.push(Span::from(" "));
+            content.push(Span::styled(
+                format!("#{} {state}", pr.number),
+                Style::new().fg(theme.accent),
+            ));
+        }
     }
+    content
 }
 
 pub struct SessionsListState {
