@@ -1,3 +1,4 @@
+mod cli;
 mod clone;
 mod config;
 mod delete;
@@ -9,8 +10,10 @@ mod theme;
 mod tmux;
 mod tui;
 mod utils;
+mod worktree;
 
 use env_logger::{Builder, Target};
+use serde::Serialize;
 use std::{fs::OpenOptions, io, process::exit};
 use terminal_colorsaurus::{QueryOptions, ThemeMode, theme_mode};
 
@@ -25,26 +28,26 @@ mod tests;
 pub const LOG_FILE: &str = "app.log";
 
 fn main() -> io::Result<()> {
-    let file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(LOG_FILE)
-        .unwrap();
+    if let Ok(file) =
+        OpenOptions::new().create(true).append(true).open(LOG_FILE)
+    {
+        Builder::from_default_env()
+            .target(Target::Pipe(Box::new(file)))
+            .init();
+    }
 
-    Builder::from_default_env()
-        .target(Target::Pipe(Box::new(file)))
-        .init();
-
-    let theme_mode = theme_mode_or_light(theme_mode(QueryOptions::default()));
-
+    let error_json = std::env::args().any(|arg| arg == "--json");
     match config::resolve() {
         Ok(config::Startup::Help) => {
             print!("{}", config::USAGE);
         }
         Ok(config::Startup::Ready(resolved)) => match &resolved.command {
             config::Command::Picker => {
+                let theme_mode =
+                    theme_mode_or_light(theme_mode(QueryOptions::default()));
                 let selected = ratatui::run(|terminal| {
-                    Tui::from_config(resolved.clone(), theme_mode).run(terminal)
+                    Tui::from_config(*resolved.clone(), theme_mode)
+                        .run(terminal)
                 })?;
                 if let Some(candidate) = selected {
                     let outcome = match resolved.multiplexer {
@@ -62,16 +65,80 @@ fn main() -> io::Result<()> {
                     }
                 }
             }
+            config::Command::List => {
+                if resolved.json {
+                    json_line(
+                        &serde_json::json!({ "candidates": resolved.candidates }),
+                    )?;
+                } else {
+                    for candidate in &resolved.candidates {
+                        println!("{}", candidate.path);
+                    }
+                }
+            }
+            config::Command::Open { path, workspace_id } => {
+                let opened = cli::open(&resolved, path, workspace_id.as_deref())
+                    .unwrap_or_else(|e| {
+                        if resolved.json && let Some(ids) = &e.workspace_ids {
+                            eprintln!("{}", serde_json::json!({ "error": e.message, "workspace_ids": ids }));
+                            exit(1);
+                        }
+                        fail(&e.to_string(), resolved.json)
+                    });
+                if resolved.json {
+                    json_line(&opened)?;
+                } else {
+                    match opened {
+                        cli::Opened::Tmux { path, session } => {
+                            println!("{path} (tmux session {session})")
+                        }
+                        cli::Opened::Herdr { path, workspace_id } => {
+                            println!("{path} (Herdr workspace {workspace_id})")
+                        }
+                    }
+                }
+            }
             config::Command::Clone {
                 source,
                 destination,
-            } => match clone::run(&resolved, source, destination) {
-                Ok(_) => {}
-                Err(e) => {
-                    eprintln!("{e}");
-                    exit(1);
+                add_parent,
+            } => {
+                match clone::run(&resolved, source, destination, *add_parent) {
+                    Ok(outcome) => {
+                        if resolved.json {
+                            json_line(&serde_json::json!({
+                                "source": source,
+                                "destination": outcome.dest,
+                                "config_updated": outcome.config_updated,
+                                "discoverable": outcome.discoverable,
+                            }))?;
+                        }
+                    }
+                    Err(e) => fail(&e.to_string(), resolved.json),
                 }
-            },
+            }
+            config::Command::WorktreeCreate {
+                repo,
+                branch,
+                destination,
+                new_branch,
+                add_parent,
+            } => {
+                let outcome = worktree::create(
+                    &resolved,
+                    repo,
+                    branch,
+                    destination,
+                    *new_branch,
+                    *add_parent,
+                )
+                .unwrap_or_else(|e| fail(&e, resolved.json));
+                if resolved.json {
+                    json_line(&outcome)?;
+                } else {
+                    println!("{}", outcome.destination);
+                }
+            }
             config::Command::Delete {
                 path,
                 dry_run,
@@ -85,28 +152,61 @@ fn main() -> io::Result<()> {
                     force: *force,
                 };
                 match delete::run(&resolved, &request) {
-                    Ok(delete::DeleteOutcome::DryRun(_)) => {
-                        // `delete::run` already wrote the report once.
-                    }
-                    Ok(delete::DeleteOutcome::Deleted { .. })
-                    | Ok(delete::DeleteOutcome::Cancelled) => {}
-                    Err(e) => {
-                        eprint!("{e}");
-                        if !matches!(e, delete::DeleteError::Blocked(_)) {
-                            eprintln!();
+                    Ok(delete::DeleteOutcome::DryRun(report)) => {
+                        if resolved.json {
+                            json_line(
+                                &serde_json::json!({ "preflight": report }),
+                            )?;
                         }
-                        exit(1);
+                    }
+                    Ok(delete::DeleteOutcome::Deleted { path, strategy }) => {
+                        if resolved.json {
+                            json_line(
+                                &serde_json::json!({ "path": path, "strategy": strategy }),
+                            )?;
+                        }
+                    }
+                    Ok(delete::DeleteOutcome::Cancelled) => {
+                        if resolved.json {
+                            json_line(
+                                &serde_json::json!({ "cancelled": true }),
+                            )?;
+                        }
+                    }
+                    Err(e) => {
+                        if let delete::DeleteError::Blocked(ref report) = e
+                            && resolved.json
+                        {
+                            eprintln!(
+                                "{}",
+                                serde_json::json!({ "error": "deletion blocked", "preflight": report })
+                            );
+                            exit(1);
+                        }
+                        fail(&e.to_string(), resolved.json);
                     }
                 }
             }
         },
-        Err(e) => {
-            eprintln!("{e}");
-            exit(1);
-        }
+        Err(e) => fail(&e.to_string(), error_json),
     }
 
     Ok(())
+}
+
+fn json_line(value: &impl Serialize) -> io::Result<()> {
+    serde_json::to_writer(io::stdout(), value).map_err(io::Error::other)?;
+    println!();
+    Ok(())
+}
+
+fn fail(message: &str, json: bool) -> ! {
+    if json {
+        eprintln!("{}", serde_json::json!({ "error": message }));
+    } else {
+        eprintln!("{message}");
+    }
+    exit(1);
 }
 
 /// Report an activation outcome after the terminal is restored. Success is
