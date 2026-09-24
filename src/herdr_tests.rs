@@ -1,7 +1,7 @@
 use super::{
     Activation, Choice, CommandRunner, HerdrError, OpenError, RawOutput,
-    choose_from, open_with, pane_cwds_with, pane_list, workspace_create,
-    workspace_focus,
+    choose_from, open_with, open_with_selection, pane_cwds_with, pane_list,
+    workspace_create, workspace_focus,
 };
 use crate::label::project_target_label;
 use crate::utils::test_utils::TempDir;
@@ -665,6 +665,59 @@ fn several_ids_chooser_selects_focus() {
     .unwrap();
 
     assert_eq!(runner.calls[1].1, ["workspace", "focus", "8"]);
+}
+
+#[test]
+fn explicit_matching_id_focuses_without_prompt() {
+    let d = TempDir::new();
+    let project = d.child("work/foo");
+    let cwd = project.canonicalize().unwrap().display().to_string();
+    let mut runner = ScriptRunner::new(vec![
+        json_out(
+            0,
+            &pane_list_body(vec![
+                pane("3", Some(&cwd), None, None),
+                pane("8", Some(&cwd), None, None),
+            ]),
+        ),
+        json_out(0, FOCUS_OK),
+    ]);
+    let mut chooser = |_: &str, _: &[String]| -> Result<Choice, OpenError> {
+        panic!("noninteractive selection must not ask");
+    };
+    let env = open_env(&d.path().display().to_string());
+    let result = open_with_selection(
+        project.to_str().unwrap(),
+        &mut runner,
+        &env,
+        Some("8"),
+        &mut chooser,
+    )
+    .unwrap();
+    assert!(result.is_some());
+    assert_eq!(runner.calls[1].1, ["workspace", "focus", "8"]);
+}
+
+#[test]
+fn explicit_id_not_matching_path_never_focuses_or_creates() {
+    let d = TempDir::new();
+    let project = d.child("work/foo");
+    let cwd = project.canonicalize().unwrap().display().to_string();
+    for panes in [vec![], vec![pane("3", Some(&cwd), None, None)]] {
+        let mut runner =
+            ScriptRunner::new(vec![json_out(0, &pane_list_body(panes))]);
+        let env = open_env(&d.path().display().to_string());
+        let err = open_with_selection(
+            project.to_str().unwrap(),
+            &mut runner,
+            &env,
+            Some("8"),
+            &mut choose_cancel(),
+        )
+        .unwrap_err();
+        assert!(matches!(err, OpenError::WorkspaceNotMatching { .. }));
+        assert_eq!(runner.calls.len(), 1);
+    }
 }
 
 #[test]
