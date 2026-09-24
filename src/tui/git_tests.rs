@@ -2204,9 +2204,616 @@ fn git_states_retain_paths_drops_survivors_only() {
     assert!(states.get("/a").is_some());
     assert!(states.get("/b").is_none());
 }
-            pull_request: None,
-            pull_request_checked: false,
-            pull_request: None,
-            pull_request_checked: false,
-            pull_request: None,
-            pull_request_checked: false,
+
+fn named_scan(branch: &str) -> ScanResult {
+    ScanResult {
+        state: WorkState::Clean,
+        head: Head::Named(branch.to_string()),
+        upstream: Upstream::Absent,
+    }
+}
+
+#[test]
+fn pr_lookup_does_not_block_local_scan_or_initial_snapshot() {
+    let lookup_gate = Arc::new(Gate::closed());
+    let _guard = OpenOnDrop(Arc::clone(&lookup_gate));
+    let entered = Arc::new(AtomicBool::new(false));
+    let ops = GitOps {
+        resolve: Arc::new(|_| (root("/repo", false), Head::Absent)),
+        scan: Arc::new(|_| named_scan("topic")),
+        pr: Arc::new({
+            let (gate, entered) =
+                (Arc::clone(&lookup_gate), Arc::clone(&entered));
+            move |_, _| {
+                entered.store(true, Ordering::SeqCst);
+                gate.wait();
+                super::PullRequestLookup::Missing
+            }
+        }),
+        between_cycles: Arc::new(|| {}),
+        cycle_delay: Duration::from_secs(2),
+    };
+    let rx = start_poll_with(vec!["/repo".into()], ops, 4);
+    let first = recv_full(&rx, 1);
+    assert_eq!(first[0].1.head, Head::Named("topic".into()));
+    assert_eq!(first[0].1.pull_request, None);
+    assert!(
+        wait_until(Duration::from_secs(3), || entered.load(Ordering::SeqCst))
+    );
+    drop(rx);
+}
+
+#[test]
+fn pr_result_publishes_during_one_second_inter_cycle_wait() {
+    let lookup_gate = Arc::new(Gate::closed());
+    let _guard = OpenOnDrop(Arc::clone(&lookup_gate));
+    let entered = Arc::new(AtomicBool::new(false));
+    let scans = Arc::new(AtomicUsize::new(0));
+    let in_pause = Arc::new(AtomicBool::new(false));
+    let ops = GitOps {
+        resolve: Arc::new(|_| (root("/repo", false), Head::Absent)),
+        scan: Arc::new({
+            let scans = Arc::clone(&scans);
+            move |_| {
+                scans.fetch_add(1, Ordering::SeqCst);
+                named_scan("topic")
+            }
+        }),
+        pr: Arc::new({
+            let (gate, entered) =
+                (Arc::clone(&lookup_gate), Arc::clone(&entered));
+            move |_, _| {
+                entered.store(true, Ordering::SeqCst);
+                gate.wait();
+                super::PullRequestLookup::Found(super::PullRequest {
+                    number: 17,
+                    state: super::PullRequestState::Open,
+                })
+            }
+        }),
+        between_cycles: Arc::new({
+            let in_pause = Arc::clone(&in_pause);
+            move || in_pause.store(true, Ordering::SeqCst)
+        }),
+        cycle_delay: Duration::from_secs(1),
+    };
+    let rx = start_poll_with(vec!["/repo".into()], ops, 4);
+    let first = recv_full(&rx, 1);
+    assert_eq!(first[0].1.pull_request, None);
+    let cycle_end = recv_full(&rx, 1);
+    assert_eq!(cycle_end[0].1.pull_request, None);
+    assert!(wait_until(Duration::from_secs(3), || {
+        entered.load(Ordering::SeqCst) && in_pause.load(Ordering::SeqCst)
+    }));
+    lookup_gate.open();
+    let badge = rx
+        .recv_timeout(Duration::from_millis(850))
+        .expect("PR result stranded behind one-second scan wait");
+    assert_eq!(badge[0].1.pull_request.unwrap().number, 17);
+    assert_eq!(
+        scans.load(Ordering::SeqCst),
+        1,
+        "refresh ran before PR publication"
+    );
+    drop(rx);
+}
+
+#[test]
+fn pr_lookup_is_deduplicated_while_in_flight_across_refreshes() {
+    let lookup_gate = Arc::new(Gate::closed());
+    let _guard = OpenOnDrop(Arc::clone(&lookup_gate));
+    let calls = Arc::new(AtomicUsize::new(0));
+    let scans = Arc::new(AtomicUsize::new(0));
+    let ops = GitOps {
+        resolve: Arc::new(|_| (root("/repo", false), Head::Absent)),
+        scan: Arc::new({
+            let scans = Arc::clone(&scans);
+            move |_| {
+                scans.fetch_add(1, Ordering::SeqCst);
+                named_scan("topic")
+            }
+        }),
+        pr: Arc::new({
+            let (gate, calls) = (Arc::clone(&lookup_gate), Arc::clone(&calls));
+            move |_, _| {
+                calls.fetch_add(1, Ordering::SeqCst);
+                gate.wait();
+                super::PullRequestLookup::Missing
+            }
+        }),
+        between_cycles: Arc::new(|| {}),
+        cycle_delay: Duration::from_millis(20),
+    };
+    let rx = start_poll_with(vec!["/repo".into()], ops, 4);
+    for _ in 0..10 {
+        let _ = rx.recv_timeout(Duration::from_secs(3)).unwrap();
+        if scans.load(Ordering::SeqCst) >= 3 {
+            break;
+        }
+    }
+    assert!(scans.load(Ordering::SeqCst) >= 3);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    drop(rx);
+}
+
+#[test]
+fn stale_pr_outcome_cannot_attach_to_new_branch() {
+    let old_gate = Arc::new(Gate::closed());
+    let _guard = OpenOnDrop(Arc::clone(&old_gate));
+    let scans = Arc::new(AtomicUsize::new(0));
+    let old_entered = Arc::new(AtomicBool::new(false));
+    let ops = GitOps {
+        resolve: Arc::new(|_| (root("/repo", false), Head::Absent)),
+        scan: Arc::new({
+            let scans = Arc::clone(&scans);
+            move |_| {
+                if scans.fetch_add(1, Ordering::SeqCst) == 0 {
+                    named_scan("old")
+                } else {
+                    named_scan("new")
+                }
+            }
+        }),
+        pr: Arc::new({
+            let (old_gate, old_entered) =
+                (Arc::clone(&old_gate), Arc::clone(&old_entered));
+            move |_, branch| {
+                if branch == "old" {
+                    old_entered.store(true, Ordering::SeqCst);
+                    old_gate.wait();
+                }
+                super::PullRequestLookup::Found(super::PullRequest {
+                    number: if branch == "old" { 1 } else { 2 },
+                    state: super::PullRequestState::Open,
+                })
+            }
+        }),
+        between_cycles: Arc::new(|| {}),
+        cycle_delay: Duration::from_millis(20),
+    };
+    let rx = start_poll_with(vec!["/repo".into()], ops, 4);
+    assert!(wait_until(Duration::from_secs(3), || old_entered
+        .load(Ordering::SeqCst)));
+    let mut saw_new_head = false;
+    for _ in 0..10 {
+        let state = rx.recv_timeout(Duration::from_secs(3)).unwrap()[0]
+            .1
+            .clone();
+        if state.head == Head::Named("new".into()) {
+            saw_new_head = true;
+            break;
+        }
+    }
+    assert!(saw_new_head, "new branch scan did not publish");
+    old_gate.open();
+    let mut saw_new = false;
+    for _ in 0..20 {
+        let state = rx.recv_timeout(Duration::from_secs(2)).unwrap()[0]
+            .1
+            .clone();
+        assert_ne!(state.pull_request.map(|pr| pr.number), Some(1));
+        if state.head == Head::Named("new".into())
+            && state.pull_request.map(|pr| pr.number) == Some(2)
+        {
+            saw_new = true;
+            break;
+        }
+    }
+    assert!(saw_new, "new branch PR was not published");
+    drop(rx);
+}
+
+#[test]
+fn scheduler_retains_badge_after_refresh_when_gh_is_transient() {
+    let scans = Arc::new(AtomicUsize::new(0));
+    let lookups = Arc::new(AtomicUsize::new(0));
+    let ops = GitOps {
+        resolve: Arc::new(|_| (root("/repo", false), Head::Absent)),
+        scan: Arc::new({
+            let scans = Arc::clone(&scans);
+            move |_| {
+                let mut result = named_scan("topic");
+                result.state = WorkState::Measurable {
+                    added: scans.fetch_add(1, Ordering::SeqCst) as u64 + 1,
+                    deleted: 0,
+                };
+                result
+            }
+        }),
+        pr: Arc::new({
+            let lookups = Arc::clone(&lookups);
+            move |_, _| {
+                if lookups.fetch_add(1, Ordering::SeqCst) == 0 {
+                    super::PullRequestLookup::Found(super::PullRequest {
+                        number: 11,
+                        state: super::PullRequestState::Open,
+                    })
+                } else {
+                    super::PullRequestLookup::Transient
+                }
+            }
+        }),
+        between_cycles: Arc::new(|| {}),
+        cycle_delay: Duration::from_millis(30),
+    };
+    let rx = start_poll_with(vec!["/repo".into()], ops, 4);
+    let mut saw_refreshed_badge = false;
+    for _ in 0..20 {
+        let state = rx.recv_timeout(Duration::from_secs(3)).unwrap()[0]
+            .1
+            .clone();
+        if state.state
+            == (WorkState::Measurable {
+                added: 2,
+                deleted: 0,
+            })
+            && state.pull_request.map(|pr| pr.number) == Some(11)
+        {
+            saw_refreshed_badge = true;
+            break;
+        }
+    }
+    assert!(saw_refreshed_badge, "refresh discarded the previous badge");
+    drop(rx);
+}
+
+#[test]
+fn badge_survives_refresh_but_explicit_miss_clears_it_in_ui() {
+    let mut states = GitStates::new();
+    let mut found =
+        candidate_state(&root("/repo", false), Some(named_scan("topic")));
+    found.pull_request = Some(super::PullRequest {
+        number: 11,
+        state: super::PullRequestState::Open,
+    });
+    found.pull_request_checked = true;
+    states.apply(vec![("/repo".into(), found)]);
+    states.apply(vec![(
+        "/repo".into(),
+        candidate_state(&root("/repo", false), Some(named_scan("topic"))),
+    )]);
+    assert_eq!(
+        states.get("/repo").unwrap().pull_request.unwrap().number,
+        11
+    );
+    let mut missing =
+        candidate_state(&root("/repo", false), Some(named_scan("topic")));
+    missing.pull_request_checked = true;
+    states.apply(vec![("/repo".into(), missing)]);
+    assert_eq!(states.get("/repo").unwrap().pull_request, None);
+}
+
+#[test]
+fn badge_is_not_retained_after_branch_switch() {
+    let mut states = GitStates::new();
+    let mut found =
+        candidate_state(&root("/repo", false), Some(named_scan("old")));
+    found.pull_request = Some(super::PullRequest {
+        number: 11,
+        state: super::PullRequestState::Open,
+    });
+    found.pull_request_checked = true;
+    states.apply(vec![("/repo".into(), found)]);
+    states.apply(vec![(
+        "/repo".into(),
+        candidate_state(&root("/repo", false), Some(named_scan("new"))),
+    )]);
+    assert_eq!(states.get("/repo").unwrap().pull_request, None);
+}
+
+#[test]
+fn branch_publishes_pending_before_slow_scan() {
+    let scan_gate = Arc::new(Gate::closed());
+    let _guard = OpenOnDrop(Arc::clone(&scan_gate));
+    let pr_entered = Arc::new(AtomicBool::new(false));
+    let ops = GitOps {
+        resolve: Arc::new(|_| {
+            (root("/repo", false), Head::Named("topic".to_string()))
+        }),
+        scan: Arc::new({
+            let gate = Arc::clone(&scan_gate);
+            move |_| {
+                gate.wait();
+                named_scan("topic")
+            }
+        }),
+        pr: Arc::new({
+            let entered = Arc::clone(&pr_entered);
+            move |_, _| {
+                entered.store(true, Ordering::SeqCst);
+                super::PullRequestLookup::Missing
+            }
+        }),
+        between_cycles: Arc::new(|| {}),
+        cycle_delay: Duration::from_secs(2),
+    };
+    let rx = start_poll_with(vec!["/repo".into()], ops, 4);
+    // The gated scan cannot finish, so anything published for
+    // the candidate is the branch-first partial: identity must
+    // never wait behind status/diff work.
+    let snap = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("no publish before the scan completed");
+    assert_eq!(snap[0].1.root.as_deref(), Some("/repo"));
+    assert_eq!(snap[0].1.head, Head::Named("topic".into()));
+    assert_eq!(snap[0].1.state, WorkState::Pending);
+    // The PR lookup is queued the moment the branch is known,
+    // while the scan is still gated.
+    assert!(
+        wait_until(Duration::from_secs(3), || pr_entered
+            .load(Ordering::SeqCst)),
+        "PR lookup waited for the status/diff scan",
+    );
+    drop(rx);
+}
+
+#[test]
+fn pr_badge_lands_before_scan_and_survives_it() {
+    let scan_gate = Arc::new(Gate::closed());
+    let _guard = OpenOnDrop(Arc::clone(&scan_gate));
+    let ops = GitOps {
+        resolve: Arc::new(|_| {
+            (root("/repo", false), Head::Named("topic".to_string()))
+        }),
+        scan: Arc::new({
+            let gate = Arc::clone(&scan_gate);
+            move |_| {
+                gate.wait();
+                named_scan("topic")
+            }
+        }),
+        pr: Arc::new(|_, _| {
+            super::PullRequestLookup::Found(super::PullRequest {
+                number: 17,
+                state: super::PullRequestState::Open,
+            })
+        }),
+        between_cycles: Arc::new(|| {}),
+        cycle_delay: Duration::from_secs(2),
+    };
+    let rx = start_poll_with(vec!["/repo".into()], ops, 4);
+    // The badge publishes while the status/diff scan is still
+    // gated: PR info never waits for the working tree.
+    let mut before = None;
+    for _ in 0..10 {
+        let snap = rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("poll worker stopped");
+        if snap[0].1.pull_request.map(|pr| pr.number) == Some(17) {
+            before = Some(snap[0].1.clone());
+            break;
+        }
+    }
+    let before = before.expect("PR badge never published before the scan");
+    assert_eq!(before.state, WorkState::Pending);
+    // The completed scan replaces the partial without dropping
+    // the badge on the unchanged branch.
+    scan_gate.open();
+    let mut after = None;
+    for _ in 0..10 {
+        let snap = rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("poll worker stopped");
+        if snap[0].1.state == WorkState::Clean {
+            after = Some(snap[0].1.clone());
+            break;
+        }
+    }
+    let after = after.expect("scan never completed");
+    assert_eq!(after.head, Head::Named("topic".into()));
+    assert_eq!(after.pull_request.map(|pr| pr.number), Some(17));
+    drop(rx);
+}
+
+#[test]
+fn failed_scan_retains_fast_lane_branch_and_checked_pr() {
+    let scan_gate = Arc::new(Gate::closed());
+    let _guard = OpenOnDrop(Arc::clone(&scan_gate));
+    let ops = GitOps {
+        resolve: Arc::new(|_| {
+            (root("/repo", false), Head::Named("topic".to_string()))
+        }),
+        scan: Arc::new({
+            let gate = Arc::clone(&scan_gate);
+            move |_| {
+                gate.wait();
+                scanned(WorkState::Failed)
+            }
+        }),
+        pr: Arc::new(|_, _| {
+            super::PullRequestLookup::Found(super::PullRequest {
+                number: 17,
+                state: super::PullRequestState::Open,
+            })
+        }),
+        between_cycles: Arc::new(|| {}),
+        cycle_delay: Duration::from_secs(2),
+    };
+    let rx = start_poll_with(vec!["/repo".into()], ops, 4);
+    let before = (0..10)
+        .map(|_| rx.recv_timeout(Duration::from_secs(5)).unwrap())
+        .find(|snap| snap[0].1.pull_request_checked)
+        .expect("PR lookup never completed before the gated scan");
+    assert_eq!(before[0].1.state, WorkState::Pending);
+    scan_gate.open();
+    let after = (0..10)
+        .map(|_| rx.recv_timeout(Duration::from_secs(5)).unwrap())
+        .find(|snap| snap[0].1.state == WorkState::Failed)
+        .expect("failed scan was not published");
+    assert_eq!(after[0].1.head, Head::Named("topic".into()));
+    assert_eq!(after[0].1.pull_request.map(|pr| pr.number), Some(17));
+    assert!(after[0].1.pull_request_checked);
+    drop(rx);
+}
+
+#[test]
+fn late_resolver_never_downgrades_finished_scan() {
+    let late_gate = Arc::new(Gate::closed());
+    let _guard = OpenOnDrop(Arc::clone(&late_gate));
+    let ops = GitOps {
+        resolve: Arc::new({
+            let gate = Arc::clone(&late_gate);
+            move |c: &str| {
+                if c == "/a/y" {
+                    gate.wait();
+                }
+                (root("/r", false), Head::Named("topic".to_string()))
+            }
+        }),
+        scan: Arc::new(|_| named_scan("topic")),
+        pr: Arc::new(|_, _| super::PullRequestLookup::Missing),
+        between_cycles: Arc::new(|| {}),
+        cycle_delay: Duration::from_secs(30),
+    };
+    let rx = start_poll_with(vec!["/a/x".into(), "/a/y".into()], ops, 4);
+    // Let the shared root scan finish (visible on /a/x) before
+    // the nested candidate resolves.
+    let mut scanned = false;
+    for _ in 0..32 {
+        let snap = rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("poll worker stopped");
+        if snap
+            .iter()
+            .any(|(c, s)| c == "/a/x" && s.state == WorkState::Clean)
+        {
+            scanned = true;
+            break;
+        }
+    }
+    assert!(scanned, "shared root scan never completed");
+    late_gate.open();
+    // The late resolver publishes the finished scan state; its
+    // own identity result must never regress it to Pending.
+    let mut seen = false;
+    for _ in 0..32 {
+        let snap = rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("poll worker stopped");
+        if let Some((_, s)) = snap.iter().find(|(c, _)| c == "/a/y") {
+            assert_eq!(
+                s.state,
+                WorkState::Clean,
+                "late resolver downgraded the finished scan",
+            );
+            assert_eq!(s.head, Head::Named("topic".into()));
+            seen = true;
+            break;
+        }
+    }
+    assert!(seen, "late resolver never published");
+    drop(rx);
+}
+
+/// Opt-in via `scripts/bench-git-pr.sh`: real Git roots and the production
+/// scheduler/PR parser with a scripted, PR-bearing gh response. This measures
+/// cold candidate→state delivery, not paint or an in-memory cache hit. The
+/// scripted delay models remote service time; it is not a network SLA test.
+#[test]
+#[ignore = "run scripts/bench-git-pr.sh explicitly (creates 70 throwaway repos)"]
+fn candidate_to_head_and_fresh_pr_benchmark() {
+    let base = std::env::var("CONTX_BENCH_ROOTS")
+        .expect("run this ignored test via scripts/bench-git-pr.sh");
+    let all_roots: Vec<_> =
+        (0..70).map(|i| format!("{base}/repo{i}")).collect();
+    let expected_pr = super::PullRequest {
+        number: 42,
+        state: super::PullRequestState::Open,
+    };
+    for size in [1, 5, 20, 70] {
+        let mut heads = Vec::new();
+        let mut prs = Vec::new();
+        let mut head_tails = Vec::new();
+        let mut pr_tails = Vec::new();
+        let rounds = if size == 1 { 5 } else { 3 };
+        for _ in 0..rounds {
+            super::PR_CACHE
+                .get_or_init(|| Mutex::new(HashMap::new()))
+                .lock()
+                .unwrap()
+                .clear();
+            let paths = all_roots[..size].to_vec();
+            let mut first_head = vec![None; size];
+            let mut first_pr = vec![None; size];
+            let ops = GitOps::real();
+            let probe = Arc::clone(&ops.resolve);
+            let started = Instant::now();
+            let rx = start_poll_with(paths.clone(), ops, 4);
+            while first_pr.iter().any(Option::is_none) {
+                let snap = rx
+                    .recv_timeout(Duration::from_secs(120))
+                    .expect("scheduler stopped before fresh PRs were checked");
+                for (candidate, state) in snap {
+                    let index = paths
+                        .iter()
+                        .position(|path| path == &candidate)
+                        .unwrap();
+                    if state.head == Head::Named("topic".to_string())
+                        && first_head[index].is_none()
+                    {
+                        first_head[index] = Some(started.elapsed());
+                    }
+                    if state.pull_request_checked && first_pr[index].is_none() {
+                        assert_eq!(state.pull_request, Some(expected_pr));
+                        first_pr[index] = Some(started.elapsed());
+                    }
+                }
+            }
+            drop(rx);
+            assert!(
+                wait_until(Duration::from_secs(30), || {
+                    Arc::strong_count(&probe) == 1
+                }),
+                "poll worker did not stop after dropping benchmark receiver"
+            );
+            let head: Vec<_> =
+                first_head.into_iter().map(Option::unwrap).collect();
+            let pr: Vec<_> = first_pr.into_iter().map(Option::unwrap).collect();
+            head_tails.push(*head.iter().max().unwrap());
+            pr_tails.push(*pr.iter().max().unwrap());
+            heads.extend(head);
+            prs.extend(pr);
+        }
+        let report = |name: &str, samples: &mut Vec<Duration>| {
+            samples.sort_unstable();
+            let percentile = |p: usize| {
+                samples[(samples.len() * p).div_ceil(100) - 1].as_millis()
+            };
+            println!(
+                "{size} roots {name}: n={} p50={}ms p95={}ms max={}ms",
+                samples.len(),
+                percentile(50),
+                percentile(95),
+                samples.last().unwrap().as_millis()
+            );
+        };
+        report("candidate→Head", &mut heads);
+        report("candidate→fresh checked PR", &mut prs);
+        report("head tail per run", &mut head_tails);
+        report("checked PR tail per run", &mut pr_tails);
+    }
+}
+
+#[test]
+fn resolve_jobs_jump_ahead_of_queued_scans() {
+    let (scan_tx, scan_rx) = mpsc::channel::<String>();
+    let (resolve_tx, resolve_rx) = mpsc::channel::<String>();
+    let (_wake_tx, wake_rx) = mpsc::channel::<()>();
+    let queue = super::WorkerQueue {
+        scans: Mutex::new(scan_rx),
+        resolves: Mutex::new(resolve_rx),
+        wake: Mutex::new(wake_rx),
+    };
+    // Both queues backlogged: the branch-identity-bearing
+    // resolve must never wait behind queued status/diff scans,
+    // or the name-first publish starves exactly like the scan.
+    scan_tx.send("/s1".to_string()).unwrap();
+    scan_tx.send("/s2".to_string()).unwrap();
+    resolve_tx.send("/c1".to_string()).unwrap();
+    assert!(
+        matches!(queue.next(), Some(super::Job::Resolve(c)) if c == "/c1"),
+        "queued scans starved the branch identity lane",
+    );
+    assert!(matches!(queue.next(), Some(super::Job::Scan(s)) if s == "/s1"),);
+    assert!(matches!(queue.next(), Some(super::Job::Scan(s)) if s == "/s2"),);
+}
