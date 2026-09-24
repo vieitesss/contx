@@ -191,12 +191,12 @@ fn machine_open_focuses_only_a_matching_herdr_workspace() {
     let script = d.0.join("herdr-mock.sh");
     fs::write(&script, format!(r#"#!/bin/sh
 echo "$*" >> '{}'
-if [ "$1" = pane ]; then
-    printf '%s\n' '{{"result":{{"type":"pane_list","panes":[{{"workspace_id":"w7","cwd":"{}"}},{{"workspace_id":"w8","cwd":"{}"}}]}}}}'
+if [ "$1" = workspace ] && [ "$2" = list ]; then
+    printf '%s\n' '{{"result":{{"type":"workspace_list","workspaces":[{{"workspace_id":"w7","label":"team_example"}},{{"workspace_id":"w8","label":"team_example"}}]}}}}'
 else
     printf '%s\n' '{{"result":{{"type":"workspace_info","workspace":{{"workspace_id":"w7"}}}}}}'
 fi
-"#, calls.display(), project.display(), project.display())).unwrap();
+"#, calls.display())).unwrap();
     fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
 
     let run = |id: &str| {

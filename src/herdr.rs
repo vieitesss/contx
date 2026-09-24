@@ -205,6 +205,13 @@ fn pane_cwds_with(
     pane_cwds_from(&listed)
 }
 
+fn workspace_list(
+    runner: &mut dyn CommandRunner,
+    env: &dyn Fn(&str) -> Option<OsString>,
+) -> Result<Value, HerdrError> {
+    invoke(runner, env, &["workspace", "list"])
+}
+
 fn workspace_focus(
     runner: &mut dyn CommandRunner,
     env: &dyn Fn(&str) -> Option<OsString>,
@@ -292,7 +299,7 @@ impl fmt::Display for OpenError {
             ),
             Self::WorkspaceNotMatching { workspace_id, ids } => write!(
                 f,
-                "Herdr workspace `{workspace_id}` does not match this path (matching IDs: {}); not creating",
+                "Herdr workspace `{workspace_id}` does not match this target (matching IDs: {}); not creating",
                 ids.join(", ")
             ),
             Self::InvalidChoice => {
@@ -306,16 +313,6 @@ impl fmt::Display for OpenError {
     }
 }
 
-fn matches_canonical(reported: Option<&str>, canonical: &Path) -> bool {
-    let Some(raw) = reported.filter(|s| !s.is_empty()) else {
-        return false;
-    };
-    match Path::new(raw).canonicalize() {
-        Ok(path) => path == canonical,
-        Err(_) => false,
-    }
-}
-
 fn expect_type(result: &Value, expected: &str) -> Result<(), OpenError> {
     if result.get("type").and_then(Value::as_str) == Some(expected) {
         Ok(())
@@ -324,35 +321,46 @@ fn expect_type(result: &Value, expected: &str) -> Result<(), OpenError> {
     }
 }
 
-fn matching_ids(
+fn named_workspace_ids(
     result: &Value,
-    canonical: &Path,
+    target_label: &str,
+    target_name: &str,
 ) -> Result<Vec<String>, OpenError> {
-    expect_type(result, "pane_list")?;
-    let Some(panes) = result.get("panes").and_then(Value::as_array) else {
+    expect_type(result, "workspace_list")?;
+    let Some(workspaces) = result.get("workspaces").and_then(Value::as_array)
+    else {
         return Err(OpenError::MalformedResult);
     };
+    let target_label = target_label.to_lowercase();
+    let target_name = target_name.to_lowercase();
+    let mut exact = Vec::new();
+    let mut suffix = Vec::new();
     let mut seen = HashSet::new();
-    let mut ids = Vec::new();
-    for pane in panes {
-        let Some(id) = pane.get("workspace_id").and_then(Value::as_str) else {
+    for workspace in workspaces {
+        let Some(id) = workspace.get("workspace_id").and_then(Value::as_str)
+        else {
             continue;
         };
-        if id.is_empty() {
+        let Some(label) = workspace.get("label").and_then(Value::as_str) else {
+            continue;
+        };
+        if id.is_empty() || label.is_empty() || !seen.insert(id.to_string()) {
             continue;
         }
-        let cwd = pane.get("cwd").and_then(Value::as_str);
-        let foreground = pane.get("foreground_cwd").and_then(Value::as_str);
-        if !(matches_canonical(cwd, canonical)
-            || matches_canonical(foreground, canonical))
-        {
-            continue;
-        }
-        if seen.insert(id.to_string()) {
-            ids.push(id.to_string());
+        let normalized = label.to_lowercase();
+        if normalized == target_label {
+            exact.push(id.to_string());
+        } else if normalized.ends_with(&target_name) {
+            suffix.push(id.to_string());
         }
     }
-    Ok(ids)
+    Ok(if !exact.is_empty() {
+        exact
+    } else if !suffix.is_empty() {
+        suffix
+    } else {
+        Vec::new()
+    })
 }
 
 fn workspace_id_from(result: &Value) -> Result<String, OpenError> {
@@ -466,17 +474,19 @@ fn open_with_selection(
     // Naming fails before any Herdr command so an invalid
     // candidate cannot list panes or create a workspace.
     let label = label_for(candidate, env)?;
-    let listed = pane_list(runner, env).map_err(OpenError::Cli)?;
-    let ids = matching_ids(&listed, &canonical)?;
-    if let Some(id) = selected_id
-        && !ids.iter().any(|matching| matching == id)
-    {
-        return Err(OpenError::WorkspaceNotMatching {
-            workspace_id: id.to_string(),
-            ids,
-        });
-    }
+    let target_name = Path::new(candidate)
+        .file_name()
+        .ok_or_else(|| OpenError::InvalidCandidate(candidate.to_string()))?
+        .to_string_lossy();
+    let listed = workspace_list(runner, env).map_err(OpenError::Cli)?;
+    let ids = named_workspace_ids(&listed, &label, &target_name)?;
     if let Some(id) = selected_id {
+        if !ids.iter().any(|matching| matching == id) {
+            return Err(OpenError::WorkspaceNotMatching {
+                workspace_id: id.to_string(),
+                ids,
+            });
+        }
         return focus_observed(runner, env, id);
     }
     match ids.as_slice() {

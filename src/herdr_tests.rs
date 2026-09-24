@@ -1,3 +1,5 @@
+#[cfg(all(unix, not(target_os = "macos")))]
+use super::named_workspace_ids;
 use super::{
     Activation, Choice, CommandRunner, HerdrError, OpenError, RawOutput,
     choose_from, open_with, open_with_selection, pane_cwds_with, pane_list,
@@ -289,6 +291,23 @@ fn pane(
 }
 
 fn pane_list_body(panes: Vec<serde_json::Value>) -> String {
+    let workspaces = panes
+        .into_iter()
+        .map(|pane| {
+            json!({
+                "workspace_id": pane["workspace_id"],
+                "label": pane.get("label").and_then(|label| label.as_str()).unwrap_or("unrelated")
+            })
+        })
+        .collect::<Vec<_>>();
+    json!({
+        "id": "cli:workspace:list",
+        "result": { "type": "workspace_list", "workspaces": workspaces }
+    })
+    .to_string()
+}
+
+fn pane_list_result(panes: Vec<serde_json::Value>) -> String {
     json!({
         "id": "cli:pane:list",
         "result": { "type": "pane_list", "panes": panes }
@@ -353,7 +372,7 @@ fn canonicalize_failure_does_not_create() {
 }
 
 #[test]
-fn unique_cwd_match_focuses_without_create() {
+fn exact_workspace_label_focuses_without_create() {
     let d = TempDir::new();
     let project = d.child("work/foo");
     let canonical = project.canonicalize().unwrap();
@@ -364,7 +383,7 @@ fn unique_cwd_match_focuses_without_create() {
                 "3",
                 Some(&canonical.display().to_string()),
                 None,
-                Some("other_label"),
+                Some("work_foo"),
             )]),
         ),
         json_out(0, FOCUS_OK),
@@ -387,12 +406,12 @@ fn unique_cwd_match_focuses_without_create() {
         })
     );
     assert_eq!(runner.calls.len(), 2);
-    assert_eq!(runner.calls[0].1, ["pane", "list"]);
+    assert_eq!(runner.calls[0].1, ["workspace", "list"]);
     assert_eq!(runner.calls[1].1, ["workspace", "focus", "3"]);
 }
 
 #[test]
-fn unique_foreground_cwd_match_focuses() {
+fn exact_workspace_label_is_independent_of_pane_cwd_field() {
     let d = TempDir::new();
     let project = d.child("work/foo");
     let canonical = project.canonicalize().unwrap();
@@ -403,7 +422,7 @@ fn unique_foreground_cwd_match_focuses() {
                 "7",
                 None,
                 Some(&canonical.display().to_string()),
-                None,
+                Some("work_foo"),
             )]),
         ),
         json_out(0, FOCUS_OK),
@@ -423,7 +442,7 @@ fn unique_foreground_cwd_match_focuses() {
 }
 
 #[test]
-fn duplicate_panes_same_workspace_are_one_focus() {
+fn duplicate_workspace_rows_only_focus_once() {
     let d = TempDir::new();
     let project = d.child("work/foo");
     let cwd = project.canonicalize().unwrap().display().to_string();
@@ -431,8 +450,8 @@ fn duplicate_panes_same_workspace_are_one_focus() {
         json_out(
             0,
             &pane_list_body(vec![
-                pane("3", Some(&cwd), None, None),
-                pane("3", None, Some(&cwd), None),
+                pane("3", Some(&cwd), None, Some("work_foo")),
+                pane("3", None, Some(&cwd), Some("work_foo")),
             ]),
         ),
         json_out(0, FOCUS_OK),
@@ -452,7 +471,7 @@ fn duplicate_panes_same_workspace_are_one_focus() {
 }
 
 #[test]
-fn malformed_reported_paths_do_not_abort_or_false_match() {
+fn unrelated_workspace_labels_are_ignored_when_target_label_matches() {
     let d = TempDir::new();
     let project = d.child("work/foo");
     let other = d.child("work/bar");
@@ -464,7 +483,7 @@ fn malformed_reported_paths_do_not_abort_or_false_match() {
                 pane("1", Some("/definitely/missing/herdr-cwd"), None, None),
                 pane("2", Some(""), None, Some("foo")),
                 pane("3", Some(&other.display().to_string()), None, None),
-                pane("4", Some(&cwd), None, None),
+                pane("4", Some(&cwd), None, Some("work_foo")),
             ]),
         ),
         json_out(0, FOCUS_OK),
@@ -484,19 +503,18 @@ fn malformed_reported_paths_do_not_abort_or_false_match() {
 }
 
 #[test]
-fn label_is_not_used_to_match() {
+fn unrelated_cwd_workspace_is_not_reused_without_matching_workspace_name() {
     let d = TempDir::new();
     let project = d.child("work/foo");
-    let other = d.child("other/place");
-    let other_cwd = other.canonicalize().unwrap().display().to_string();
+    let target_cwd = project.canonicalize().unwrap().display().to_string();
     let mut runner = ScriptRunner::new(vec![
         json_out(
             0,
             &pane_list_body(vec![pane(
                 "9",
-                Some(&other_cwd),
+                Some(&target_cwd),
                 None,
-                Some("work_foo"),
+                Some("personal_tt-tasks"),
             )]),
         ),
         json_out(0, CREATE_OK),
@@ -514,6 +532,113 @@ fn label_is_not_used_to_match() {
 
     assert_eq!(runner.calls[1].1[0], "workspace");
     assert_eq!(runner.calls[1].1[1], "create");
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+#[test]
+fn non_utf8_target_directory_name_matches_lossily() {
+    use std::os::unix::ffi::OsStringExt;
+
+    let d = TempDir::new();
+    let directory_name = OsString::from_vec(b"target-\xff".to_vec());
+    let target = d.path().join(&directory_name);
+    std::fs::create_dir(&target).unwrap();
+    let target_name = target.file_name().unwrap().to_string_lossy();
+    let listed = json!({
+        "type": "workspace_list",
+        "workspaces": [{
+            "workspace_id": "target",
+            "label": format!("project_{target_name}")
+        }]
+    });
+
+    let ids =
+        named_workspace_ids(&listed, "different_label", &target_name).unwrap();
+
+    assert_eq!(ids, ["target"]);
+}
+
+#[test]
+fn exact_target_workspace_beats_name_fragment_and_unrelated_open_tab() {
+    let d = TempDir::new();
+    let project = d.child("vieitesprefapp/dotfiles");
+    let other = d.child("other");
+    let project_path = project.canonicalize().unwrap().display().to_string();
+    let other_path = other.canonicalize().unwrap().display().to_string();
+    let workspaces = json!({
+        "id": "cli:workspace:list",
+        "result": {
+            "type": "workspace_list",
+            "workspaces": [
+                { "workspace_id": "unrelated", "label": "personal_tt-tasks", "cwd": project_path },
+                { "workspace_id": "suffix", "label": "team_dotfiles" },
+                { "workspace_id": "target", "label": "vieitesprefapp_dotfiles", "cwd": other_path }
+            ]
+        }
+    }).to_string();
+    let focus = json!({
+        "id": "cli:workspace:focus",
+        "result": { "type": "workspace_info", "workspace": { "workspace_id": "target" } }
+    }).to_string();
+    let mut runner =
+        ScriptRunner::new(vec![json_out(0, &workspaces), json_out(0, &focus)]);
+    let env = open_env(&d.path().display().to_string());
+
+    open_with(
+        &project.display().to_string(),
+        &mut runner,
+        &env,
+        &mut choose_cancel(),
+    )
+    .unwrap();
+
+    assert_eq!(runner.calls[1].1, ["workspace", "focus", "target"]);
+}
+
+#[test]
+fn creates_canonical_workspace_instead_of_reusing_partial_name_with_target_tab()
+{
+    let d = TempDir::new();
+    let project = d.child("vieitesprefapp/dotfiles");
+    let other = d.child("other");
+    let canonical = project.canonicalize().unwrap().display().to_string();
+    let workspaces = json!({
+        "id": "cli:workspace:list",
+        "result": {
+            "type": "workspace_list",
+            "workspaces": [
+                { "workspace_id": "unrelated", "label": "personal_tt-tasks", "cwd": canonical },
+                { "workspace_id": "fragment", "label": "a_dotfiles_worktree", "cwd": other.display().to_string() }
+            ]
+        }
+    })
+    .to_string();
+    let mut runner = ScriptRunner::new(vec![
+        json_out(0, &workspaces),
+        json_out(0, CREATE_OK),
+    ]);
+    let env = open_env(&d.path().display().to_string());
+
+    open_with(
+        &project.display().to_string(),
+        &mut runner,
+        &env,
+        &mut choose_cancel(),
+    )
+    .unwrap();
+
+    assert_eq!(
+        runner.calls[1].1,
+        [
+            "workspace",
+            "create",
+            "--cwd",
+            canonical.as_str(),
+            "--label",
+            "vieitesprefapp_dotfiles",
+            "--focus",
+        ]
+    );
 }
 
 #[test]
@@ -647,8 +772,8 @@ fn several_ids_chooser_selects_focus() {
         json_out(
             0,
             &pane_list_body(vec![
-                pane("3", Some(&cwd), None, None),
-                pane("8", Some(&cwd), None, None),
+                pane("3", Some(&cwd), None, Some("work_foo")),
+                pane("8", Some(&cwd), None, Some("work_foo")),
             ]),
         ),
         json_out(0, FOCUS_OK),
@@ -676,8 +801,8 @@ fn explicit_matching_id_focuses_without_prompt() {
         json_out(
             0,
             &pane_list_body(vec![
-                pane("3", Some(&cwd), None, None),
-                pane("8", Some(&cwd), None, None),
+                pane("3", Some(&cwd), None, Some("work_foo")),
+                pane("8", Some(&cwd), None, Some("work_foo")),
             ]),
         ),
         json_out(0, FOCUS_OK),
@@ -703,7 +828,8 @@ fn explicit_id_not_matching_path_never_focuses_or_creates() {
     let d = TempDir::new();
     let project = d.child("work/foo");
     let cwd = project.canonicalize().unwrap().display().to_string();
-    for panes in [vec![], vec![pane("3", Some(&cwd), None, None)]] {
+    for panes in [vec![], vec![pane("3", Some(&cwd), None, Some("unrelated"))]]
+    {
         let mut runner =
             ScriptRunner::new(vec![json_out(0, &pane_list_body(panes))]);
         let env = open_env(&d.path().display().to_string());
@@ -728,8 +854,8 @@ fn several_ids_cancel_has_no_focus_or_create() {
     let mut runner = ScriptRunner::new(vec![json_out(
         0,
         &pane_list_body(vec![
-            pane("3", Some(&cwd), None, None),
-            pane("8", Some(&cwd), None, None),
+            pane("3", Some(&cwd), None, Some("work_foo")),
+            pane("8", Some(&cwd), None, Some("work_foo")),
         ]),
     )]);
     let env = open_env(&d.path().display().to_string());
@@ -745,7 +871,7 @@ fn several_ids_cancel_has_no_focus_or_create() {
 
     assert_eq!(outcome, None);
     assert_eq!(runner.calls.len(), 1);
-    assert_eq!(runner.calls[0].1, ["pane", "list"]);
+    assert_eq!(runner.calls[0].1, ["workspace", "list"]);
 }
 
 #[test]
@@ -793,8 +919,8 @@ fn several_ids_invalid_choice_does_not_create() {
     let mut runner = ScriptRunner::new(vec![json_out(
         0,
         &pane_list_body(vec![
-            pane("3", Some(&cwd), None, None),
-            pane("8", Some(&cwd), None, None),
+            pane("3", Some(&cwd), None, Some("work_foo")),
+            pane("8", Some(&cwd), None, Some("work_foo")),
         ]),
     )]);
     let env = open_env(&d.path().display().to_string());
@@ -818,7 +944,15 @@ fn observed_focus_not_found_is_disappeared_not_created() {
     let project = d.child("work/foo");
     let cwd = project.canonicalize().unwrap().display().to_string();
     let mut runner = ScriptRunner::new(vec![
-        json_out(0, &pane_list_body(vec![pane("3", Some(&cwd), None, None)])),
+        json_out(
+            0,
+            &pane_list_body(vec![pane(
+                "3",
+                Some(&cwd),
+                None,
+                Some("work_foo"),
+            )]),
+        ),
         focus_err_not_found("3"),
     ]);
     let env = open_env(&d.path().display().to_string());
@@ -840,12 +974,12 @@ fn observed_focus_not_found_is_disappeared_not_created() {
 }
 
 #[test]
-fn pane_list_missing_panes_errors_without_create() {
+fn workspace_list_missing_workspaces_errors_without_create() {
     let d = TempDir::new();
     let project = d.child("work/foo");
     let body = json!({
-        "id": "cli:pane:list",
-        "result": { "type": "pane_list" }
+        "id": "cli:workspace:list",
+        "result": { "type": "workspace_list" }
     })
     .to_string();
     let mut runner = ScriptRunner::new(vec![json_out(0, &body)]);
@@ -865,12 +999,12 @@ fn pane_list_missing_panes_errors_without_create() {
 }
 
 #[test]
-fn pane_list_wrong_type_errors_without_create() {
+fn workspace_list_wrong_type_errors_without_create() {
     let d = TempDir::new();
     let project = d.child("work/foo");
     let body = json!({
-        "id": "cli:pane:list",
-        "result": { "type": "workspace_list", "panes": [] }
+        "id": "cli:workspace:list",
+        "result": { "type": "pane_list", "panes": [] }
     })
     .to_string();
     let mut runner = ScriptRunner::new(vec![json_out(0, &body)]);
@@ -900,7 +1034,15 @@ fn focus_missing_workspace_id_errors() {
     })
     .to_string();
     let mut runner = ScriptRunner::new(vec![
-        json_out(0, &pane_list_body(vec![pane("3", Some(&cwd), None, None)])),
+        json_out(
+            0,
+            &pane_list_body(vec![pane(
+                "3",
+                Some(&cwd),
+                None,
+                Some("work_foo"),
+            )]),
+        ),
         json_out(0, &focus),
     ]);
     let env = open_env(&d.path().display().to_string());
@@ -915,6 +1057,8 @@ fn focus_missing_workspace_id_errors() {
     .unwrap_err();
 
     assert!(matches!(err, OpenError::MalformedResult));
+    assert_eq!(runner.calls.len(), 2);
+    assert_eq!(runner.calls[1].1, ["workspace", "focus", "3"]);
 }
 
 #[test]
@@ -948,7 +1092,7 @@ fn create_wrong_type_errors() {
 fn pane_cwds_collects_cwd_and_foreground_without_duplicates() {
     let mut runner = ScriptRunner::new(vec![json_out(
         0,
-        &pane_list_body(vec![
+        &pane_list_result(vec![
             pane("1", Some("/work/a"), Some("/work/b"), None),
             pane("2", Some("/work/a"), None, None),
             pane("3", Some(""), Some("/work/c"), None),

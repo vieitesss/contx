@@ -99,7 +99,7 @@ contx --json worktree create --new-branch --add-parent /absolute/path/to/repo fe
 contx --json --multiplexer herdr open /absolute/path/to/new-worktree
 ```
 
-`list` returns `{"candidates":[{"path":...,"group":...,"from_home_discovery":...}]}` from current configuration. `open` requires an existing current candidate (relative paths resolve against the process cwd); it returns a tmux `session` or Herdr `workspace_id` along with the activated `path` and `multiplexer`. It focuses an existing matching project target or creates one at that path. Herdr matching uses live pane paths: if several workspaces match, the CLI **fails without prompting or creating** and returns `workspace_ids` in the JSON error; retry with `--workspace-id ID` only after selecting a listed ID. An ID that no longer matches the path is refused. The picker still offers its interactive choice. Activating a project does not change the calling shell's cwd or move existing agent processes.
+`list` returns `{"candidates":[{"path":...,"group":...,"from_home_discovery":...}]}` from current configuration. `open` requires an existing current candidate (relative paths resolve against the process cwd); it returns a tmux `session` or Herdr `workspace_id` along with the activated `path` and `multiplexer`. It focuses an existing matching project target or creates one at that path. Herdr resolution prefers a workspace whose label matches the canonical target label, then a label ending with the target directory name; a label that merely contains the directory name is not a match. If neither exists, it creates a workspace with the canonical target label. If several workspaces match by name, the CLI **fails without prompting or creating** and returns `workspace_ids` in the JSON error; retry with `--workspace-id ID` only after selecting a listed ID. An explicit `--workspace-id` is accepted when its label is an exact canonical-label match, or—if no exact match exists—a suffix match; other IDs are refused. The picker still offers its interactive choice. Activating a project does not change the calling shell's cwd or move existing agent processes.
 
 `worktree create` takes an existing repository-root candidate, a **local** branch, and a new destination. Without `--new-branch` the branch must already exist; with it, the branch must not exist and is created from the selected repo's HEAD. Git creates the linked checkout using `git worktree add` (non-force); creation alone does not focus a workspace. Destinations, including clone destinations, must not already exist. Relative destinations resolve against the process cwd. `--add-parent` explicitly adds an uncovered destination parent to the config **after** successful creation so the new checkout is discoverable by `list`, `open`, and `delete`. Without it, noninteractive creation leaves config unchanged; JSON outcomes report `discoverable` and `config_updated`. A Git success followed by a config write failure leaves the created directory in place and reports its path. A failed/interrupted Git operation also leaves any surviving destination untouched.
 
@@ -180,14 +180,14 @@ Active-path checks use the process working directory and pane working directorie
 After Enter on a directory (or `contx open <path>`):
 
 - **tmux:** switch to the session named from that path. If none exists, create one there and switch.
-- **Herdr:** focus a workspace whose live pane working directory matches that path. If none exists, create one at the path (`--cwd`, `--label`, `--focus`). The label uses the same rules as tmux session names and is never used to find an existing workspace.
+- **Herdr:** prefer an existing workspace whose label matches the canonical target label, then a label ending with the target directory name. A label that merely contains the directory name is not a match; if neither match exists, create a workspace at the path with the canonical label (`--cwd`, `--label`, `--focus`). Live pane working directories do not make an unrelated workspace a match.
 
 If a target was seen and is gone before the switch/focus, `contx` reports it and does not recreate it. Existing layout and processes are left as-is.
 
 Herdr extras:
 
 - Binary: nonempty `HERDR_BIN_PATH`, otherwise `herdr` on `PATH`. A set but unusable `HERDR_BIN_PATH` does not fall back to `PATH`.
-- Several matching workspaces: a numbered prompt on a TTY stdin. Empty input, `q`, or EOF cancels with no focus and no create. Non-TTY stdin lists the IDs and exits.
+- Several name-matching workspaces: a numbered prompt on a TTY stdin. Empty input, `q`, or EOF cancels with no focus and no create. Non-TTY stdin lists the IDs and exits.
 
 ## Launch keys
 
@@ -211,6 +211,6 @@ command = "contx"
 ## Limitations
 
 - No Herdr pane, tab, or agent management in the TUI, and no control of one multiplexer from the other. CLI worktree creation uses Git; it does not attach Herdr worktree metadata. Clone and delete act on session candidates (including Git linked worktrees), not on Herdr worktrees.
-- Herdr matching uses live pane working directories, not labels or stored IDs. A shell that `cd`s away can make the original workspace unmatchable (a later pick may create a duplicate); a pane that `cd`s into another project can reuse that other workspace.
+- Herdr target resolution uses workspace labels, not live pane working directories. A shell that `cd`s away does not change which named workspace is selected; an open tab in an unrelated workspace does not make that workspace a match.
 - Workspace IDs are not persisted. Disappeared targets are not recreated.
 - No silent fallback between tmux and Herdr; no server start or attach. If `auto` picks the wrong nested multiplexer, pass `--multiplexer` explicitly.
