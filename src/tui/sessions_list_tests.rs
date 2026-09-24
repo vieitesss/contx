@@ -6,7 +6,10 @@ use super::{
 use crate::{
     theme::Theme,
     tui::{
-        git::{CandidateState, Head, Upstream, WorkState},
+        git::{
+            CandidateState, Head, PullRequest, PullRequestState, Upstream,
+            WorkState,
+        },
         selection::{Intent, Selection},
     },
 };
@@ -109,6 +112,8 @@ fn git_spans_nonrepo_measurable_and_weight() {
         state: WorkState::Clean,
         head: Head::Absent,
         upstream: Upstream::Absent,
+        pull_request: None,
+        pull_request_checked: false,
     };
     assert!(git_spans(Some(&nonrepo), 20, theme).is_empty());
 
@@ -122,6 +127,8 @@ fn git_spans_nonrepo_measurable_and_weight() {
         },
         head: Head::Absent,
         upstream: Upstream::Absent,
+        pull_request: None,
+        pull_request_checked: false,
     };
     let spans = git_spans(Some(&meas), 20, theme);
     let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
@@ -289,6 +296,8 @@ fn git_line_renders_measurable_pair_on_line_two() {
             },
             head: Head::Absent,
             upstream: Upstream::Absent,
+            pull_request: None,
+            pull_request_checked: false,
         },
     )]);
     let buf = render_list(&sel, &mut state, 40, 2);
@@ -321,6 +330,8 @@ fn git_line_states_loading_failed_marker_nonrepo() {
                 state: WorkState::Failed,
                 head: Head::Absent,
                 upstream: Upstream::Absent,
+                pull_request: None,
+                pull_request_checked: false,
             },
         ),
         (
@@ -332,6 +343,8 @@ fn git_line_states_loading_failed_marker_nonrepo() {
                 state: WorkState::Marker,
                 head: Head::Absent,
                 upstream: Upstream::Absent,
+                pull_request: None,
+                pull_request_checked: false,
             },
         ),
         (
@@ -343,6 +356,8 @@ fn git_line_states_loading_failed_marker_nonrepo() {
                 state: WorkState::Clean,
                 head: Head::Absent,
                 upstream: Upstream::Absent,
+                pull_request: None,
+                pull_request_checked: false,
             },
         ),
     ]);
@@ -374,6 +389,8 @@ fn narrow_width_keeps_basename_and_drops_counts_together() {
             },
             head: Head::Absent,
             upstream: Upstream::Absent,
+            pull_request: None,
+            pull_request_checked: false,
         },
     )]);
     // Wide: full path with the paired counts.
@@ -397,6 +414,8 @@ fn upstream_state(state: WorkState, upstream: Upstream) -> CandidateState {
         state,
         head: Head::Absent,
         upstream,
+        pull_request: None,
+        pull_request_checked: false,
     }
 }
 
@@ -419,7 +438,33 @@ fn named_state(
         state,
         head: Head::Named(name.to_string()),
         upstream,
+        pull_request: None,
+        pull_request_checked: false,
     }
+}
+
+#[test]
+fn git_spans_shows_associated_pr_number_and_state() {
+    let mut state = named_state(WorkState::Clean, "topic", Upstream::Absent);
+    state.pull_request = Some(PullRequest {
+        number: 123,
+        state: PullRequestState::Open,
+    });
+
+    assert!(spans_text(&state, 40).contains("#123 OPEN"));
+}
+
+#[test]
+fn git_spans_omits_pr_when_no_pr_or_insufficient_width() {
+    let state = named_state(WorkState::Clean, "topic", Upstream::Absent);
+    assert!(!spans_text(&state, 40).contains("#"));
+
+    let mut state = state;
+    state.pull_request = Some(PullRequest {
+        number: 123,
+        state: PullRequestState::Closed,
+    });
+    assert!(!spans_text(&state, 8).contains("#123"));
 }
 
 #[test]
@@ -472,6 +517,8 @@ fn git_spans_detached_shows_short_sha() {
             short: "a1b2c3d".to_string(),
         },
         upstream: Upstream::Absent,
+        pull_request: None,
+        pull_request_checked: false,
     };
     let text = spans_text(&detached, 20);
     assert_eq!(text, "\u{ec6f} a1b2c3d");
@@ -479,11 +526,12 @@ fn git_spans_detached_shows_short_sha() {
 }
 
 #[test]
-fn git_spans_omits_head_on_failed_and_loading() {
-    // Failed stays the failure glyph even with a known head.
-    let failed = named_state(WorkState::Failed, "topic", Upstream::Absent);
+fn git_spans_omits_head_on_failed_resolve_and_loading() {
+    // A failed resolution has no confirmed root and cannot claim a head.
+    let mut failed = named_state(WorkState::Failed, "topic", Upstream::Absent);
+    failed.root = None;
     let text = spans_text(&failed, 20);
-    assert!(!text.contains("topic"), "failed glyph only: {text}");
+    assert!(!text.contains("topic"), "failed resolution: {text}");
     // Loading stays the ellipsis, never a name.
     let text: String = git_spans(None, 20, Theme::LIGHT)
         .iter()
@@ -551,6 +599,8 @@ fn git_line_renders_branch_on_clean_and_dirty_rows() {
                 state: WorkState::Clean,
                 head: Head::Named("topic".to_string()),
                 upstream: Upstream::Absent,
+                pull_request: None,
+                pull_request_checked: false,
             },
         ),
         (
@@ -565,6 +615,8 @@ fn git_line_renders_branch_on_clean_and_dirty_rows() {
                 },
                 head: Head::Named("side".to_string()),
                 upstream: Upstream::Absent,
+                pull_request: None,
+                pull_request_checked: false,
             },
         ),
     ]);
@@ -778,6 +830,8 @@ fn git_line_renders_upstream_on_clean_and_dirty_rows() {
                     ahead: 0,
                     behind: 1,
                 },
+                pull_request: None,
+                pull_request_checked: false,
             },
         ),
         (
@@ -795,6 +849,8 @@ fn git_line_renders_upstream_on_clean_and_dirty_rows() {
                     ahead: 2,
                     behind: 1,
                 },
+                pull_request: None,
+                pull_request_checked: false,
             },
         ),
     ]);
@@ -1069,6 +1125,8 @@ fn rendered_git_line_unaffected_by_path_shaping() {
             },
             head: Head::Absent,
             upstream: Upstream::Absent,
+            pull_request: None,
+            pull_request_checked: false,
         },
     )]);
     let buf = render_list(&sel, &mut state, 12, 2);
@@ -1137,6 +1195,8 @@ fn grouped_git(
             state: WorkState::Clean,
             head: Head::Absent,
             upstream: Upstream::Absent,
+            pull_request: None,
+            pull_request_checked: false,
         },
     )
 }
@@ -2958,4 +3018,30 @@ fn ctrl_j_distinct_header_indices_do_not_share_tint_or_loop() {
         focus_stop(&sel, &state),
         VisualTarget::Child(diffs.to_string())
     );
+}
+
+#[test]
+fn git_spans_failed_scan_keeps_branch_pr_and_failure_indicator() {
+    let mut state = named_state(WorkState::Failed, "topic", Upstream::Absent);
+    state.pull_request = Some(PullRequest {
+        number: 17,
+        state: PullRequestState::Open,
+    });
+    let text = spans_text(&state, 40);
+    assert!(text.starts_with("\u{f467} topic"), "{text}");
+    assert!(text.contains("#17 OPEN"), "{text}");
+}
+
+#[test]
+fn git_spans_pending_shows_head_name_and_badge() {
+    // Identity-only partial: the name stands alone, never a
+    // fabricated change summary.
+    let mut state = named_state(WorkState::Pending, "topic", Upstream::Absent);
+    assert_eq!(spans_text(&state, 20), "\u{ec6f} topic");
+    // A PR that lands before the scan still badges the row.
+    state.pull_request = Some(PullRequest {
+        number: 5,
+        state: PullRequestState::Open,
+    });
+    assert!(spans_text(&state, 40).contains("#5 OPEN"));
 }

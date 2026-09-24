@@ -286,6 +286,8 @@ fn git_state(
             state,
             head,
             upstream: Upstream::Absent,
+            pull_request: None,
+            pull_request_checked: false,
         },
     )
 }
