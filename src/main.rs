@@ -14,7 +14,14 @@ mod worktree;
 
 use env_logger::{Builder, Target};
 use serde::Serialize;
-use std::{fs::OpenOptions, io, process::exit};
+use std::{
+    env,
+    ffi::OsString,
+    fs::{self, OpenOptions},
+    io,
+    path::PathBuf,
+    process::exit,
+};
 use terminal_colorsaurus::{QueryOptions, ThemeMode, theme_mode};
 
 use config::Multiplexer;
@@ -25,16 +32,8 @@ use tui::Tui;
 #[path = "main_tests.rs"]
 mod tests;
 
-pub const LOG_FILE: &str = "app.log";
-
 fn main() -> io::Result<()> {
-    if let Ok(file) =
-        OpenOptions::new().create(true).append(true).open(LOG_FILE)
-    {
-        Builder::from_default_env()
-            .target(Target::Pipe(Box::new(file)))
-            .init();
-    }
+    init_logging();
 
     let error_json = std::env::args().any(|arg| arg == "--json");
     match config::resolve() {
@@ -212,6 +211,39 @@ fn fail(message: &str, json: bool) -> ! {
 /// Report an activation outcome after the terminal is restored. Success is
 /// silent so the TUI exits cleanly; failure yields an actionable
 /// diagnostic for stderr instead of panicking.
+/// Logs to the state directory, and only when `RUST_LOG` asks for it, so
+/// running contx never leaves a log file behind in the working directory.
+fn init_logging() {
+    if env::var_os("RUST_LOG").is_none() {
+        return;
+    }
+    let Some(path) = log_file_path(&|name| env::var_os(name)) else {
+        return;
+    };
+    if let Some(dir) = path.parent() {
+        let _ = fs::create_dir_all(dir);
+    }
+    if let Ok(file) = OpenOptions::new().create(true).append(true).open(&path) {
+        Builder::from_default_env()
+            .target(Target::Pipe(Box::new(file)))
+            .init();
+    }
+}
+
+/// `$XDG_STATE_HOME/contx/app.log`, falling back to
+/// `~/.local/state/contx/app.log`. Relative values are ignored, as the XDG
+/// base directory spec requires.
+fn log_file_path(env: &dyn Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
+    let absolute = |name: &str| {
+        env(name)
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute())
+    };
+    let state = absolute("XDG_STATE_HOME")
+        .or_else(|| absolute("HOME").map(|home| home.join(".local/state")))?;
+    Some(state.join("contx").join("app.log"))
+}
+
 fn report_activation(
     result: Result<ActivateResult, ActivateError>,
 ) -> Option<String> {
