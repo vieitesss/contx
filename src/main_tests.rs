@@ -1,25 +1,7 @@
-use super::{log_file_path, report_activation, theme_mode_or_light};
+use super::{log_file_path, report_activation};
 use crate::mux::{ActivateError, ActivateResult, DetectError};
 use crate::tmux::errors::{ActivationError, TmuxError};
 use std::{ffi::OsString, io, path::PathBuf};
-use terminal_colorsaurus::ThemeMode;
-
-#[test]
-fn falls_back_to_light_theme_when_detection_fails() {
-    // The reported crash: with no usable terminal device (e.g. no
-    // controlling terminal) the query fails with ENXIO ("Device not
-    // configured") and startup must not panic. Light is the only
-    // implemented theme, so it is the safe fallback.
-    let err: terminal_colorsaurus::Error =
-        std::io::Error::from_raw_os_error(6).into();
-    assert_eq!(theme_mode_or_light(Err(err)), ThemeMode::Light);
-}
-
-#[test]
-fn keeps_detected_theme_mode_when_detection_succeeds() {
-    assert_eq!(theme_mode_or_light(Ok(ThemeMode::Dark)), ThemeMode::Dark);
-    assert_eq!(theme_mode_or_light(Ok(ThemeMode::Light)), ThemeMode::Light);
-}
 
 #[test]
 fn successful_activation_reports_nothing() {

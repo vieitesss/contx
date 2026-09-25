@@ -1,6 +1,7 @@
 use super::{Picker, visual_motion};
 use crate::{
     config::{SessionCandidate, Startup, resolve_with},
+    theme::Theme,
     tui::{
         git::{CandidateState, Head, Upstream, WorkState},
         selection::Intent,
@@ -16,7 +17,6 @@ use ratatui::{
 };
 use std::ffi::OsString;
 use std::fs;
-use terminal_colorsaurus::ThemeMode;
 
 fn key(code: KeyCode) -> KeyEvent {
     KeyEvent::new(code, KeyModifiers::NONE)
@@ -37,7 +37,7 @@ fn two_groups() -> Picker {
             cand("/g1/a2", "/g1"),
             cand("/g2/b1", "/g2"),
         ],
-        ThemeMode::Light,
+        Theme::ANSI,
     )
 }
 
@@ -156,7 +156,7 @@ fn enter_on_child_activates_and_header_or_empty_refuses() {
         Intent::Activate("/g1/a1".into())
     );
 
-    let mut empty = Picker::new(&[], ThemeMode::Light);
+    let mut empty = Picker::new(&[], Theme::ANSI);
     assert_eq!(empty.handle_key(key(KeyCode::Enter)), Intent::None);
 
     let mut picker = two_groups();
@@ -174,7 +174,7 @@ fn query_unfolds_remainder_keeps_prefix_only_hides_empty_refolds_on_clear() {
             cand("/ab/zzzz", "/ab"),
             cand("/empty/nope", "/empty"),
         ],
-        ThemeMode::Light,
+        Theme::ANSI,
     );
     for c in "ab".chars() {
         picker.handle_key(key(KeyCode::Char(c)));
@@ -223,7 +223,7 @@ fn motion_walks_visible_stops_without_wrapping() {
 fn home_discovery_groups_under_home_and_skips_prefix_only_header() {
     let mut home = cand("/Users/me/proj", "/Users/me");
     home.from_home_discovery = true;
-    let mut picker = Picker::new(&[home], ThemeMode::Light);
+    let mut picker = Picker::new(&[home], Theme::ANSI);
     picker.list.home = Some("/Users/me".to_string());
     assert_eq!(picker.stops(), vec![VisualTarget::Header(0, 0)]);
     picker.handle_key(key(KeyCode::Char('p')));
@@ -244,7 +244,7 @@ fn ctrl_j_walks_repeated_run_headers_without_wrap() {
             cand("/g1/ab", "/g1"),
             cand("/g2/ab2", "/g2"),
         ],
-        ThemeMode::Light,
+        Theme::ANSI,
     );
     for c in "ab".chars() {
         picker.handle_key(key(KeyCode::Char(c)));
@@ -263,7 +263,7 @@ fn ctrl_j_walks_repeated_run_headers_without_wrap() {
 
 #[test]
 fn empty_catalog_renders_no_candidates_copy() {
-    let mut picker = Picker::new(&[], ThemeMode::Light);
+    let mut picker = Picker::new(&[], Theme::ANSI);
     let buf = render(&mut picker, 40, 4);
     let row = row_text(&buf, 0, 40);
     assert!(row.contains("no session candidates"), "{row}");
@@ -299,7 +299,7 @@ fn interleaved_g1() -> Picker {
             cand("/g1/ab", "/g1"),
             cand("/g2/ab2", "/g2"),
         ],
-        ThemeMode::Light,
+        Theme::ANSI,
     )
 }
 
@@ -465,7 +465,7 @@ fn production_empty_catalog_from_missing_config() {
         panic!("expected ready");
     };
     assert!(resolved.candidates.is_empty());
-    let mut picker = Picker::new(&resolved.candidates, ThemeMode::Light);
+    let mut picker = Picker::new(&resolved.candidates, Theme::ANSI);
     assert!(picker.stops().is_empty());
     picker.handle_key(ctrl(KeyCode::Char('j')));
     assert!(picker.stops().is_empty());
@@ -498,7 +498,7 @@ fn production_catalog_scripted_query_motion_fold_and_activate() {
             .any(|c| c.path == alpha && c.group == work_group)
     );
 
-    let mut picker = Picker::new(&candidates, ThemeMode::Light);
+    let mut picker = Picker::new(&candidates, Theme::ANSI);
     let home_s = home.display().to_string();
     picker.list.home = Some(home_s.clone());
     assert_eq!(
@@ -672,7 +672,7 @@ fn clone_dest_parent_uses_group_or_stays_unset() {
     assert_eq!(picker.clone_dest_parent().as_deref(), Some("/g1"));
     picker.handle_key(key(KeyCode::Enter));
     assert_eq!(picker.clone_dest_parent().as_deref(), Some("/g1"));
-    let empty = Picker::new(&[], ThemeMode::Light);
+    let empty = Picker::new(&[], Theme::ANSI);
     assert_eq!(empty.clone_dest_parent(), None);
 }
 

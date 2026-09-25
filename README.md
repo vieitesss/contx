@@ -135,6 +135,8 @@ After a successful clone or directory creation, the catalog is rediscovered and 
 
 Enter on a folded header never activates a project. Each candidate can show Git branch (or short SHA), dirty/add/delete counts, and cached upstream ahead/behind. Linked worktrees nest under their main checkout.
 
+The picker uses the terminal's own colors: the default foreground and background for surfaces, and the terminal's named ANSI palette for roles, so it follows both light and dark terminal themes. Roles with no ANSI equivalent are derived from the terminal's queried foreground and background: the selection background moves the background toward the foreground, and muted text (group headers, the search label, hint keys) moves the foreground toward the background so it stays readable on both light and dark palettes. When the terminal cannot be queried, the selection background falls back to an ANSI gray and muted text to the default foreground.
+
 ## Clone
 
 ```

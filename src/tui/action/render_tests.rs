@@ -11,7 +11,7 @@ use ratatui::{
 use std::ffi::OsString;
 use std::time::Instant;
 
-const T: Theme = Theme::LIGHT;
+const T: Theme = Theme::ANSI;
 
 fn key(code: KeyCode) -> KeyEvent {
     KeyEvent::new(code, KeyModifiers::NONE)
@@ -50,10 +50,14 @@ fn clone_dialog(parent: Option<&str>) -> ActionDialog {
 }
 
 fn paint(dialog: &ActionDialog, w: u16, h: u16) -> Buffer {
+    paint_with(dialog, w, h, T)
+}
+
+fn paint_with(dialog: &ActionDialog, w: u16, h: u16, theme: Theme) -> Buffer {
     let area = Rect::new(0, 0, w, h);
     let mut buf = Buffer::empty(area);
-    buf.set_style(area, ratatui::style::Style::new().bg(T.bg).fg(T.fg));
-    render_dialog(dialog, area, &mut buf);
+    buf.set_style(area, ratatui::style::Style::new().bg(theme.bg).fg(theme.fg));
+    render_dialog(dialog, area, &mut buf, theme);
     buf
 }
 
@@ -107,7 +111,7 @@ fn type_text(dialog: &mut ActionDialog, s: &str) {
 
 #[test]
 fn focused_field_cursor_inverts_and_blinks_the_character_under_it() {
-    let spans = field_spans("abc", 1, true, false);
+    let spans = field_spans("abc", 1, true, false, T);
 
     assert_eq!(spans.len(), 3);
     assert_eq!(spans[0].content, "a");
@@ -132,7 +136,7 @@ fn focused_field_cursor_inverts_and_blinks_the_character_under_it() {
 
 #[test]
 fn focused_field_cursor_uses_a_blinking_inverse_space_at_end() {
-    let spans = field_spans("abc", 3, true, false);
+    let spans = field_spans("abc", 3, true, false, T);
 
     assert_eq!(spans.len(), 2);
     assert_eq!(spans[0].content, "abc");
@@ -227,8 +231,8 @@ fn crossterm_outputs_cursor_background_and_blink_attribute() {
         let ansi = String::from_utf8(bytes).unwrap();
         assert!(ansi.contains("\u{1b}[5m"), "blink not emitted: {ansi:?}");
         assert!(
-            ansi.contains("38;2;245;245;245;48;2;40;40;40m"),
-            "inverse colors not emitted: {ansi:?}"
+            ansi.contains("\u{1b}[39m") && ansi.contains("\u{1b}[49m"),
+            "default foreground/background not emitted: {ansi:?}"
         );
         assert!(
             ansi.contains(&format!("m{symbol}\u{1b}[")),
@@ -528,6 +532,28 @@ fn current_stage_body_uses_bg_alt() {
 }
 
 #[test]
+fn dialog_honors_the_threaded_theme_selection_background() {
+    let dialog = clone_dialog(Some("/work"));
+    let custom = Theme {
+        bg_alt: ratatui::style::Color::Rgb(1, 2, 3),
+        ..T
+    };
+    let buf = paint_with(&dialog, 80, 24, custom);
+    let rect = modal_rect(Rect::new(0, 0, 80, 24));
+    let mut saw_custom = false;
+    for y in rect.y..rect.y + rect.height {
+        for x in rect.x..rect.x + rect.width {
+            if buf[(x, y)].bg == custom.bg_alt {
+                saw_custom = true;
+                break;
+            }
+        }
+    }
+    assert!(saw_custom, "dialog should use the threaded theme's bg_alt");
+    assert_ne!(custom.bg_alt, T.bg_alt);
+}
+
+#[test]
 fn completed_stage_collapses_to_summary() {
     let mut dialog = clone_dialog(Some("/work"));
     type_text(&mut dialog, "acme/y.git");
@@ -603,7 +629,7 @@ fn toast_success_is_green_cancel_is_accent() {
     let area = Rect::new(0, 0, 60, 10);
     let mut buf = Buffer::empty(area);
     buf.set_style(area, ratatui::style::Style::new().bg(T.bg));
-    render_toast(area, &mut buf, ToastKind::Success, "cloned to `/work/x`");
+    render_toast(area, &mut buf, ToastKind::Success, "cloned to `/work/x`", T);
     let text = buf_text(&buf);
     assert!(text.contains("cloned to `/work/x`"), "{text}");
     assert!(text.contains('✓'), "{text}");
@@ -619,7 +645,7 @@ fn toast_success_is_green_cancel_is_accent() {
 
     let mut buf = Buffer::empty(area);
     buf.set_style(area, ratatui::style::Style::new().bg(T.bg));
-    render_toast(area, &mut buf, ToastKind::Cancel, "clone cancelled");
+    render_toast(area, &mut buf, ToastKind::Cancel, "clone cancelled", T);
     let text = buf_text(&buf);
     assert!(text.contains("clone cancelled"), "{text}");
     let mut saw_accent = false;

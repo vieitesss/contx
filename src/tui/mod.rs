@@ -42,7 +42,6 @@ use std::{
     sync::mpsc,
     time::{Duration, Instant},
 };
-use terminal_colorsaurus::ThemeMode;
 
 use git::CandidateState;
 
@@ -59,7 +58,7 @@ struct Toast {
 pub struct Tui {
     outcome: Option<Option<String>>,
     picker: Picker,
-    theme_mode: ThemeMode,
+    theme: Theme,
     git_rx: mpsc::Receiver<Vec<(String, CandidateState)>>,
     config: Option<ResolvedConfig>,
     dialog: Option<ActionDialog>,
@@ -74,26 +73,26 @@ pub struct Tui {
 }
 
 impl Tui {
-    pub fn new(candidates: &[SessionCandidate], theme_mode: ThemeMode) -> Self {
-        Self::build(candidates, None, theme_mode)
+    pub fn new(candidates: &[SessionCandidate], theme: Theme) -> Self {
+        Self::build(candidates, None, theme)
     }
 
-    pub fn from_config(config: ResolvedConfig, theme_mode: ThemeMode) -> Self {
+    pub fn from_config(config: ResolvedConfig, theme: Theme) -> Self {
         let candidates = config.candidates.clone();
-        Self::build(&candidates, Some(config), theme_mode)
+        Self::build(&candidates, Some(config), theme)
     }
 
     fn build(
         candidates: &[SessionCandidate],
         config: Option<ResolvedConfig>,
-        theme_mode: ThemeMode,
+        theme: Theme,
     ) -> Self {
         let paths = SessionCandidate::paths(candidates);
         let (refresh_tx, refresh_rx) = mpsc::channel();
         Tui {
             outcome: None,
-            picker: Picker::new(candidates, theme_mode),
-            theme_mode,
+            picker: Picker::new(candidates, theme),
+            theme,
             git_rx: start_poll(paths),
             config,
             dialog: None,
@@ -552,7 +551,7 @@ impl Widget for &mut Tui {
             return;
         }
 
-        let t = Theme::get(self.theme_mode);
+        let t = self.theme;
         buf.set_style(area, Style::new().bg(t.bg).fg(t.fg));
 
         let chips = shortcut_hints(self.hint_surface());
@@ -595,10 +594,10 @@ impl Widget for &mut Tui {
         .render(areas[0], buf);
         (&self.picker.selection).render(areas[1], buf, &mut self.picker.list);
         if let Some(dialog) = &self.dialog {
-            action::render_dialog(dialog, content, buf);
+            action::render_dialog(dialog, content, buf, t);
         }
         if let Some(toast) = &self.toast {
-            action::render_toast(content, buf, toast.kind, &toast.msg);
+            action::render_toast(content, buf, toast.kind, &toast.msg, t);
         }
         if let Some(hint) = hint {
             for (i, row) in rows.iter().enumerate() {

@@ -5,7 +5,6 @@
 - offset in config
 - set `~` when a path is in `$HOME`; add configuration field (`home-to-tilde` ?)
 
-- dark theme
 - preview (?)
 
 - (epic) implement agent-radar

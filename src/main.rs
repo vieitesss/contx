@@ -22,7 +22,6 @@ use std::{
     path::PathBuf,
     process::exit,
 };
-use terminal_colorsaurus::{QueryOptions, ThemeMode, theme_mode};
 
 use config::Multiplexer;
 use mux::{ActivateError, ActivateResult};
@@ -42,11 +41,9 @@ fn main() -> io::Result<()> {
         }
         Ok(config::Startup::Ready(resolved)) => match &resolved.command {
             config::Command::Picker => {
-                let theme_mode =
-                    theme_mode_or_light(theme_mode(QueryOptions::default()));
+                let theme = theme::Theme::detect();
                 let selected = ratatui::run(|terminal| {
-                    Tui::from_config(*resolved.clone(), theme_mode)
-                        .run(terminal)
+                    Tui::from_config(*resolved.clone(), theme).run(terminal)
                 })?;
                 if let Some(candidate) = selected {
                     let outcome = match resolved.multiplexer {
@@ -248,18 +245,4 @@ fn report_activation(
     result: Result<ActivateResult, ActivateError>,
 ) -> Option<String> {
     result.err().map(|e| e.to_string())
-}
-
-/// Falls back to the light theme (the only one implemented) when the
-/// terminal's theme mode cannot be queried, e.g. when there is no
-/// usable terminal device.
-fn theme_mode_or_light(
-    result: Result<ThemeMode, terminal_colorsaurus::Error>,
-) -> ThemeMode {
-    result.unwrap_or_else(|e| {
-        log::warn!(
-            "failed to detect terminal theme mode: {e}; using light theme"
-        );
-        ThemeMode::Light
-    })
 }

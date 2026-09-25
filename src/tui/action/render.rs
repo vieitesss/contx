@@ -14,8 +14,6 @@ use super::prompt::mask_secret;
 use super::state::{CloneAuth, CloneKind, DeleteConfirm, DeleteStage};
 use super::{ActionDialog, CancelState, DialogOutcome, FocusItem, Op};
 
-const T: Theme = Theme::LIGHT;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ToastKind {
     Success,
@@ -87,6 +85,7 @@ pub(crate) fn render_dialog(
     dialog: &ActionDialog,
     area: Rect,
     buf: &mut Buffer,
+    t: Theme,
 ) {
     let rect = modal_rect(area);
     let title = match &dialog.op {
@@ -97,22 +96,22 @@ pub(crate) fn render_dialog(
         Op::Delete { .. } => " Delete ",
     };
     let border_fg = if dialog_has_error(dialog) {
-        T.red
+        t.red
     } else if dialog.running() {
-        T.accent
+        t.accent
     } else {
-        T.git_icon
+        t.git_icon
     };
     let block = Block::bordered()
         .title(title)
         .border_type(BorderType::Double)
-        .border_style(st(border_fg, T.bg))
-        .style(st(T.fg, T.bg))
+        .border_style(st(border_fg, t.bg))
+        .style(st(t.fg, t.bg))
         .padding(Padding::horizontal(1));
     let inner = block.inner(rect);
     Clear.render(rect, buf);
     block.render(rect, buf);
-    render_a(dialog, inner, buf);
+    render_a(dialog, inner, buf, t);
 }
 
 fn dialog_has_error(dialog: &ActionDialog) -> bool {
@@ -142,9 +141,9 @@ fn footer_chunks(area: Rect) -> (Rect, Rect, Rect) {
     (parts[0], parts[1], parts[2])
 }
 
-fn render_a(dialog: &ActionDialog, area: Rect, buf: &mut Buffer) {
+fn render_a(dialog: &ActionDialog, area: Rect, buf: &mut Buffer, t: Theme) {
     let (body, hint, btns) = footer_chunks(area);
-    let lines = accordion_lines(dialog, body.width as usize);
+    let lines = accordion_lines(dialog, body.width as usize, t);
     let max_skip = lines.len().saturating_sub(body.height as usize);
     let mut skip = dialog.view_scroll.min(max_skip);
     if dialog.focus_scroll
@@ -158,8 +157,12 @@ fn render_a(dialog: &ActionDialog, area: Rect, buf: &mut Buffer) {
         }
     }
     put_lines(buf, body, lines.into_iter().skip(skip).collect());
-    put_lines(buf, hint, vec![hint_line(dialog, hint.width as usize)]);
-    put_lines(buf, btns, vec![buttons_line(dialog, btns.width as usize)]);
+    put_lines(buf, hint, vec![hint_line(dialog, hint.width as usize, t)]);
+    put_lines(
+        buf,
+        btns,
+        vec![buttons_line(dialog, btns.width as usize, t)],
+    );
 }
 
 fn focused_form_row(dialog: &ActionDialog) -> Option<usize> {
@@ -197,10 +200,11 @@ pub(crate) fn render_toast(
     buf: &mut Buffer,
     kind: ToastKind,
     msg: &str,
+    t: Theme,
 ) {
     let (mark, fg) = match kind {
-        ToastKind::Success => (" ✓  ", T.green),
-        ToastKind::Cancel => (" ↷  ", T.accent),
+        ToastKind::Success => (" ✓  ", t.green),
+        ToastKind::Cancel => (" ↷  ", t.accent),
     };
     let text = format!("{mark}{msg}");
     let w =
@@ -213,30 +217,30 @@ pub(crate) fn render_toast(
     };
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
-        .border_style(st(fg, T.bg))
-        .style(st(T.fg, T.bg));
+        .border_style(st(fg, t.bg))
+        .style(st(t.fg, t.bg));
     let inner = block.inner(rect);
     Clear.render(rect, buf);
     block.render(rect, buf);
     Paragraph::new(Line::from(vec![Span::styled(
         trunc(&text, inner.width as usize),
-        st(fg, T.bg),
+        st(fg, t.bg),
     )]))
     .render(inner, buf);
 }
 
-fn blank(width: usize) -> Line<'static> {
-    fill(vec![], width, T.bg)
+fn blank(width: usize, t: Theme) -> Line<'static> {
+    fill(vec![], width, t.bg)
 }
 
-fn hint_line(dialog: &ActionDialog, width: usize) -> Line<'static> {
+fn hint_line(dialog: &ActionDialog, width: usize, t: Theme) -> Line<'static> {
     if !dialog.git_started()
         && let Some(err) = dialog.clone_validation_error()
     {
         return fill(
-            vec![Span::styled(trunc(&err, width), st(T.red, T.bg))],
+            vec![Span::styled(trunc(&err, width), st(t.red, t.bg))],
             width,
-            T.bg,
+            t.bg,
         );
     }
     let text = if !dialog.hint.is_empty() {
@@ -259,9 +263,9 @@ fn hint_line(dialog: &ActionDialog, width: usize) -> Line<'static> {
         "Esc cancels · completed stages reopen with i".into()
     };
     fill(
-        vec![Span::styled(trunc(&text, width), st(T.operator, T.bg))],
+        vec![Span::styled(trunc(&text, width), st(t.operator, t.bg))],
         width,
-        T.bg,
+        t.bg,
     )
 }
 
@@ -326,29 +330,33 @@ enum BtnKind {
     Ack,
 }
 
-fn btn(label: &str, focused: bool, kind: BtnKind) -> Span<'static> {
+fn btn(label: &str, focused: bool, kind: BtnKind, t: Theme) -> Span<'static> {
     let (fg, md) = match (focused, kind) {
-        (true, BtnKind::Danger) => (T.red, Modifier::BOLD),
-        (true, BtnKind::Primary) => (T.accent, Modifier::BOLD),
-        (true, BtnKind::Ack) => (T.accent, Modifier::BOLD),
-        (false, BtnKind::Danger) => (T.red, Modifier::empty()),
-        (false, _) => (T.fg, Modifier::empty()),
+        (true, BtnKind::Danger) => (t.red, Modifier::BOLD),
+        (true, BtnKind::Primary) => (t.accent, Modifier::BOLD),
+        (true, BtnKind::Ack) => (t.accent, Modifier::BOLD),
+        (false, BtnKind::Danger) => (t.red, Modifier::empty()),
+        (false, _) => (t.fg, Modifier::empty()),
     };
     Span::styled(
         format!("[{label}]"),
-        Style::new().fg(fg).bg(T.bg).add_modifier(md),
+        Style::new().fg(fg).bg(t.bg).add_modifier(md),
     )
 }
 
-fn buttons_line(dialog: &ActionDialog, width: usize) -> Line<'static> {
+fn buttons_line(
+    dialog: &ActionDialog,
+    width: usize,
+    t: Theme,
+) -> Line<'static> {
     let items = dialog.items();
     let focus = dialog.item();
     let mut spans = vec![];
     let mut push = |label: &str, on: bool, kind: BtnKind| {
         if !spans.is_empty() {
-            spans.push(Span::styled("  ", st(T.fg, T.bg)));
+            spans.push(Span::styled("  ", st(t.fg, t.bg)));
         }
-        spans.push(btn(label, on, kind));
+        spans.push(btn(label, on, kind, t));
     };
     if items.contains(&FocusItem::RejectKey) {
         push(
@@ -405,19 +413,23 @@ fn buttons_line(dialog: &ActionDialog, width: usize) -> Line<'static> {
     if items.contains(&FocusItem::Ack) {
         push("Acknowledge", focus == Some(FocusItem::Ack), BtnKind::Ack);
     }
-    fill(spans, width, T.bg)
+    fill(spans, width, t.bg)
 }
 
-fn accordion_lines(dialog: &ActionDialog, width: usize) -> Vec<Line<'static>> {
+fn accordion_lines(
+    dialog: &ActionDialog,
+    width: usize,
+    t: Theme,
+) -> Vec<Line<'static>> {
     let n = dialog.stage_n();
     let cur = dialog.current_stage();
     let mut lines = vec![];
     for i in 0..n {
         if i > 0 {
             lines.push(fill(
-                vec![Span::styled(" │", st(T.comment, T.bg))],
+                vec![Span::styled(" │", st(t.comment, t.bg))],
                 width,
-                T.bg,
+                t.bg,
             ));
         }
         let done = i < cur;
@@ -431,14 +443,14 @@ fn accordion_lines(dialog: &ActionDialog, width: usize) -> Vec<Line<'static>> {
             '○'
         };
         let mark_fg = if current {
-            T.accent
+            t.accent
         } else if done {
-            T.green
+            t.green
         } else {
-            T.comment
+            t.comment
         };
-        let title_fg = if current { T.fg } else { T.comment };
-        let bg = if selected && !current { T.bg_alt } else { T.bg };
+        let title_fg = if current { t.fg } else { t.comment };
+        let bg = if selected && !current { t.bg_alt } else { t.bg };
         let sel = if selected { "›" } else { " " };
         lines.push(fill(
             vec![
@@ -458,10 +470,10 @@ fn accordion_lines(dialog: &ActionDialog, width: usize) -> Vec<Line<'static>> {
         let expanded = current || dialog.inspect == Some(i);
         if expanded {
             let inner_w = width.saturating_sub(4);
-            let body = stage_body(dialog, i, inner_w);
-            let tint = if current { T.bg_alt } else { T.bg };
+            let body = stage_body(dialog, i, inner_w, t);
+            let tint = if current { t.bg_alt } else { t.bg };
             for b in body {
-                let mut row = vec![Span::styled(" │ ", st(T.comment, tint))];
+                let mut row = vec![Span::styled(" │ ", st(t.comment, tint))];
                 for mut sp in b.spans {
                     // Preserve the cursor's dark block; tinting its background
                     // makes the inverse space indistinguishable from the row.
@@ -477,14 +489,14 @@ fn accordion_lines(dialog: &ActionDialog, width: usize) -> Vec<Line<'static>> {
             if !sum.is_empty() {
                 lines.push(fill(
                     vec![
-                        Span::styled(" │  ", st(T.comment, T.bg)),
+                        Span::styled(" │  ", st(t.comment, t.bg)),
                         Span::styled(
                             trunc(&sum, width.saturating_sub(4)),
-                            st(T.comment, T.bg),
+                            st(t.comment, t.bg),
                         ),
                     ],
                     width,
-                    T.bg,
+                    t.bg,
                 ));
             }
         }
@@ -496,11 +508,12 @@ fn label_line(
     text: &str,
     width: usize,
     fg: ratatui::style::Color,
+    t: Theme,
 ) -> Line<'static> {
     fill(
-        vec![Span::styled(trunc(text, width), st(fg, T.bg))],
+        vec![Span::styled(trunc(text, width), st(fg, t.bg))],
         width,
-        T.bg,
+        t.bg,
     )
 }
 
@@ -509,6 +522,7 @@ fn field_spans(
     cursor: usize,
     focused: bool,
     secret: bool,
+    t: Theme,
 ) -> Vec<Span<'static>> {
     let shown: String = if secret {
         mask_secret(value)
@@ -516,7 +530,7 @@ fn field_spans(
         value.to_string()
     };
     if !focused {
-        return vec![Span::styled(shown, st(T.fg, T.bg))];
+        return vec![Span::styled(shown, st(t.fg, t.bg))];
     }
     let chars: Vec<char> = shown.chars().collect();
     let i = cursor.min(chars.len());
@@ -528,15 +542,15 @@ fn field_spans(
     };
     let mut s = vec![];
     if !left.is_empty() {
-        s.push(Span::styled(left, st(T.fg, T.bg)));
+        s.push(Span::styled(left, st(t.fg, t.bg)));
     }
     let cursor_char = chars.get(i).copied().unwrap_or(' ');
     s.push(Span::styled(
         cursor_char.to_string(),
-        st(T.bg, T.fg).add_modifier(Modifier::SLOW_BLINK),
+        st(t.bg, t.fg).add_modifier(Modifier::SLOW_BLINK),
     ));
     if !right.is_empty() {
-        s.push(Span::styled(right, st(T.fg, T.bg)));
+        s.push(Span::styled(right, st(t.fg, t.bg)));
     }
     s
 }
@@ -545,35 +559,37 @@ fn stage_body(
     dialog: &ActionDialog,
     i: usize,
     width: usize,
+    t: Theme,
 ) -> Vec<Line<'static>> {
     match &dialog.op {
         Op::Clone { form, .. } => match form.kind {
             CloneKind::Directory => match i {
-                0 => form_lines(dialog, width, dialog.git_started()),
-                _ => error_or_result_lines(dialog, width),
+                0 => form_lines(dialog, width, dialog.git_started(), t),
+                _ => error_or_result_lines(dialog, width, t),
             },
             CloneKind::Repository => match i {
-                0 => form_lines(dialog, width, dialog.git_started()),
-                1 => auth_lines(dialog, width),
-                2 => run_lines(dialog, width, "Clone"),
-                _ => error_or_result_lines(dialog, width),
+                0 => form_lines(dialog, width, dialog.git_started(), t),
+                1 => auth_lines(dialog, width, t),
+                2 => run_lines(dialog, width, "Clone", t),
+                _ => error_or_result_lines(dialog, width, t),
             },
         },
         Op::Delete { form } => match i {
-            0 => target_lines(dialog, width, dialog.git_started()),
-            1 => run_lines(dialog, width, "Remote verification fetch"),
-            2 => findings_lines(dialog, width),
-            3 => confirm_body(dialog, width),
+            0 => target_lines(dialog, width, dialog.git_started(), t),
+            1 => run_lines(dialog, width, "Remote verification fetch", t),
+            2 => findings_lines(dialog, width, t),
+            3 => confirm_body(dialog, width, t),
             _ => {
                 if matches!(dialog.outcome, Some(DialogOutcome::Failed { .. }))
                     && form.stage == DeleteStage::Delete
                 {
-                    error_or_result_lines(dialog, width)
+                    error_or_result_lines(dialog, width, t)
                 } else {
                     run_lines(
                         dialog,
                         width,
                         &format!("{} `{}`", form.strategy, form.path),
+                        t,
                     )
                 }
             }
@@ -585,6 +601,7 @@ fn form_lines(
     dialog: &ActionDialog,
     width: usize,
     locked: bool,
+    t: Theme,
 ) -> Vec<Line<'static>> {
     let Op::Clone { form, .. } = &dialog.op else {
         return vec![];
@@ -611,9 +628,9 @@ fn form_lines(
                 if form.protocol == crate::config::CloneProtocol::Ssh
                     || ssh_focused
                 {
-                    T.accent
+                    t.accent
                 } else {
-                    T.fg
+                    t.fg
                 },
             )
             .add_modifier(if ssh_focused {
@@ -626,9 +643,9 @@ fn form_lines(
                 if form.protocol == crate::config::CloneProtocol::Https
                     || https_focused
                 {
-                    T.accent
+                    t.accent
                 } else {
-                    T.fg
+                    t.fg
                 },
             )
             .add_modifier(if https_focused {
@@ -638,7 +655,7 @@ fn form_lines(
             });
         lines.push(Line::from(vec![
             Span::styled("[ SSH ]", ssh_style),
-            Span::styled(" ", st(T.bg, T.bg)),
+            Span::styled(" ", st(t.bg, t.bg)),
             Span::styled("[ HTTPS ]", https_style),
         ]));
         let hint = "owner/repo";
@@ -647,38 +664,43 @@ fn form_lines(
             width.saturating_sub(hint.chars().count() + 1),
         );
         lines.push(Line::from(vec![
-            Span::styled(label, st(T.operator, T.bg)),
+            Span::styled(label, st(t.operator, t.bg)),
             Span::raw(" "),
             Span::styled(
                 trunc(
                     hint,
                     width.saturating_sub("Repository path ".chars().count()),
                 ),
-                st(T.comment, T.bg),
+                st(t.comment, t.bg),
             ),
         ]));
-        let source_spans =
-            field_spans(form.source.text(), dialog.cursor(), src_focus, false);
-        lines.push(fill(source_spans, width, T.bg));
-        lines.push(blank(width));
+        let source_spans = field_spans(
+            form.source.text(),
+            dialog.cursor(),
+            src_focus,
+            false,
+            t,
+        );
+        lines.push(fill(source_spans, width, t.bg));
+        lines.push(blank(width, t));
     }
-    lines.push(label_line(&dest_label, width, T.operator));
+    lines.push(label_line(&dest_label, width, t.operator, t));
     lines.push(fill(
-        field_spans(form.dest.text(), dialog.cursor(), dst_focus, false),
+        field_spans(form.dest.text(), dialog.cursor(), dst_focus, false, t),
         width,
-        T.bg,
+        t.bg,
     ));
     if let Ok(abs) = dialog.abs_dest() {
         lines.push(fill(
             vec![
-                Span::styled("→ ", st(T.operator, T.bg)),
+                Span::styled("→ ", st(t.operator, t.bg)),
                 Span::styled(
                     trunc(&abs, width.saturating_sub(2)),
-                    st(T.comment, T.bg),
+                    st(t.comment, t.bg),
                 ),
             ],
             width,
-            T.bg,
+            t.bg,
         ));
     }
     if !directory {
@@ -693,12 +715,12 @@ fn form_lines(
             vec![Span::styled(
                 label,
                 Style::new()
-                    .fg(if focused { T.accent } else { T.operator })
-                    .bg(T.bg)
+                    .fg(if focused { t.accent } else { t.operator })
+                    .bg(t.bg)
                     .add_modifier(Modifier::BOLD),
             )],
             width,
-            T.bg,
+            t.bg,
         ));
         if form.show_prefixes {
             for (name, item, field) in [
@@ -708,25 +730,26 @@ fn form_lines(
                 let focused = !locked && dialog.item() == Some(item);
                 let mut spans = vec![Span::styled(
                     format!("{name} "),
-                    st(T.operator, T.bg),
+                    st(t.operator, t.bg),
                 )];
                 spans.extend(field_spans(
                     field.text(),
                     dialog.cursor(),
                     focused,
                     false,
+                    t,
                 ));
-                lines.push(fill(spans, width, T.bg));
+                lines.push(fill(spans, width, t.bg));
             }
         }
     }
     if dialog.show_add_parent() {
-        lines.push(blank(width));
+        lines.push(blank(width, t));
         let mark = if form.add_parent { "×" } else { " " };
         let fg = if !locked && dialog.item() == Some(FocusItem::AddParent) {
-            T.accent
+            t.accent
         } else {
-            T.fg
+            t.fg
         };
         let parent = dialog
             .abs_dest()
@@ -737,49 +760,59 @@ fn form_lines(
         lines.push(fill(
             vec![Span::styled(
                 trunc(&format!("[{mark}] Add `{parent}` to paths"), width),
-                st(fg, T.bg),
+                st(fg, t.bg),
             )],
             width,
-            T.bg,
+            t.bg,
         ));
     }
     if let Some(err) = dialog.clone_validation_error() {
-        lines.push(blank(width));
+        lines.push(blank(width, t));
         lines.push(fill(
-            vec![Span::styled(trunc(&err, width), st(T.red, T.bg))],
+            vec![Span::styled(trunc(&err, width), st(t.red, t.bg))],
             width,
-            T.bg,
+            t.bg,
         ));
     }
     lines
 }
 
-fn auth_lines(dialog: &ActionDialog, width: usize) -> Vec<Line<'static>> {
+fn auth_lines(
+    dialog: &ActionDialog,
+    width: usize,
+    t: Theme,
+) -> Vec<Line<'static>> {
     let Op::Clone { form, .. } = &dialog.op else {
         return vec![];
     };
     match form.auth {
         CloneAuth::Passphrase => {
-            prompt_lines(dialog, width, "Git needs a passphrase", true)
+            prompt_lines(dialog, width, "Git needs a passphrase", true, t)
         }
         CloneAuth::Username => {
-            prompt_lines(dialog, width, "Git needs a username", false)
+            prompt_lines(dialog, width, "Git needs a username", false, t)
         }
         CloneAuth::HostKey => {
             let mut lines = vec![
-                label_line("Git needs a host-key decision", width, T.operator),
-                blank(width),
+                label_line(
+                    "Git needs a host-key decision",
+                    width,
+                    t.operator,
+                    t,
+                ),
+                blank(width, t),
             ];
             for l in dialog.log.iter().take(4) {
                 for w in wrap_text(l, width) {
-                    lines.push(label_line(&w, width, T.comment));
+                    lines.push(label_line(&w, width, t.comment, t));
                 }
             }
-            lines.push(blank(width));
+            lines.push(blank(width, t));
             lines.push(label_line(
                 "Native control: Accept or Reject. Esc does not stop git.",
                 width,
-                T.comment,
+                t.comment,
+                t,
             ));
             lines
         }
@@ -787,22 +820,22 @@ fn auth_lines(dialog: &ActionDialog, width: usize) -> Vec<Line<'static>> {
             let mut lines = vec![fill(
                 vec![Span::styled(
                     trunc(" embedded git · unknown interaction", width),
-                    st(T.git_icon, T.bg_alt),
+                    st(t.git_icon, t.bg_alt),
                 )],
                 width,
-                T.bg_alt,
+                t.bg_alt,
             )];
             for l in dialog.log.iter().rev().take(6).rev() {
                 lines.push(fill(
                     vec![
-                        Span::styled("│ ", st(T.comment, T.bg_alt)),
+                        Span::styled("│ ", st(t.comment, t.bg_alt)),
                         Span::styled(
                             trunc(l, width.saturating_sub(2)),
-                            st(T.comment, T.bg_alt),
+                            st(t.comment, t.bg_alt),
                         ),
                     ],
                     width,
-                    T.bg_alt,
+                    t.bg_alt,
                 ));
             }
             lines
@@ -815,23 +848,26 @@ fn prompt_lines(
     width: usize,
     title: &str,
     secret: bool,
+    t: Theme,
 ) -> Vec<Line<'static>> {
-    let mut lines = vec![label_line(title, width, T.operator), blank(width)];
+    let mut lines =
+        vec![label_line(title, width, t.operator, t), blank(width, t)];
     for l in dialog.log.iter().rev().take(3).rev() {
         for w in wrap_text(l, width) {
-            lines.push(label_line(&w, width, T.comment));
+            lines.push(label_line(&w, width, t.comment, t));
         }
     }
-    lines.push(blank(width));
+    lines.push(blank(width, t));
     lines.push(fill(
         field_spans(
             dialog.prompt(),
             dialog.cursor(),
             dialog.item() == Some(FocusItem::Prompt),
             secret,
+            t,
         ),
         width,
-        T.bg,
+        t.bg,
     ));
     lines
 }
@@ -840,30 +876,34 @@ fn run_lines(
     dialog: &ActionDialog,
     width: usize,
     title: &str,
+    t: Theme,
 ) -> Vec<Line<'static>> {
-    let mut lines = vec![label_line(title, width, T.operator), blank(width)];
+    let mut lines =
+        vec![label_line(title, width, t.operator, t), blank(width, t)];
     match dialog.cancel {
         CancelState::Grace => {
             lines.push(label_line(
                 "SIGINT sent · waiting for git to exit",
                 width,
-                T.accent,
+                t.accent,
+                t,
             ));
         }
         CancelState::ForceReady => {
             lines.push(label_line(
                 "git still running · Force Stop will kill it",
                 width,
-                T.red,
+                t.red,
+                t,
             ));
         }
         CancelState::Idle => {}
     }
     for l in dialog.log.iter().rev().take(6).rev() {
-        lines.push(label_line(l, width, T.comment));
+        lines.push(label_line(l, width, t.comment, t));
     }
     if dialog.log.is_empty() && dialog.running() {
-        lines.push(label_line("waiting for git", width, T.comment));
+        lines.push(label_line("waiting for git", width, t.comment, t));
     }
     lines
 }
@@ -871,19 +911,21 @@ fn run_lines(
 fn error_or_result_lines(
     dialog: &ActionDialog,
     width: usize,
+    t: Theme,
 ) -> Vec<Line<'static>> {
     match &dialog.outcome {
         Some(DialogOutcome::Failed { message }) => {
             let mut lines = vec![label_line(
                 "Error — remains until acknowledged",
                 width,
-                T.red,
+                t.red,
+                t,
             )];
             for w in wrap_text(message, width) {
                 lines.push(fill(
-                    vec![Span::styled(trunc(&w, width), st(T.red, T.bg))],
+                    vec![Span::styled(trunc(&w, width), st(t.red, t.bg))],
                     width,
-                    T.bg,
+                    t.bg,
                 ));
             }
             lines
@@ -893,20 +935,20 @@ fn error_or_result_lines(
             config_error,
             refresh_error,
         }) => {
-            let mut lines = vec![label_line(summary, width, T.green)];
+            let mut lines = vec![label_line(summary, width, t.green, t)];
             if let Some(err) = config_error {
                 for w in wrap_text(err, width) {
-                    lines.push(label_line(&w, width, T.red));
+                    lines.push(label_line(&w, width, t.red, t));
                 }
             }
             if let Some(err) = refresh_error {
                 for w in wrap_text(err, width) {
-                    lines.push(label_line(&w, width, T.red));
+                    lines.push(label_line(&w, width, t.red, t));
                 }
             }
             lines
         }
-        _ => vec![label_line("waiting", width, T.comment)],
+        _ => vec![label_line("waiting", width, t.comment, t)],
     }
 }
 
@@ -914,54 +956,66 @@ fn target_lines(
     dialog: &ActionDialog,
     width: usize,
     locked: bool,
+    t: Theme,
 ) -> Vec<Line<'static>> {
     let Op::Delete { form } = &dialog.op else {
         return vec![];
     };
     let lock = if locked { "  (locked)" } else { "" };
     vec![
-        label_line(&format!("Exact target{lock}"), width, T.operator),
+        label_line(&format!("Exact target{lock}"), width, t.operator, t),
         fill(
-            vec![Span::styled(trunc(&form.path, width), st(T.fg, T.bg))],
+            vec![Span::styled(trunc(&form.path, width), st(t.fg, t.bg))],
             width,
-            T.bg,
+            t.bg,
         ),
-        blank(width),
-        label_line(&format!("Class     {}", form.class), width, T.comment),
-        label_line(&format!("Strategy  {}", form.strategy), width, T.comment),
-        blank(width),
+        blank(width, t),
+        label_line(&format!("Class     {}", form.class), width, t.comment, t),
+        label_line(
+            &format!("Strategy  {}", form.strategy),
+            width,
+            t.comment,
+            t,
+        ),
+        blank(width, t),
         label_line(
             "Linked worktrees use git; others follow config trash/permanent.",
             width,
-            T.comment,
+            t.comment,
+            t,
         ),
     ]
 }
 
-fn findings_lines(dialog: &ActionDialog, width: usize) -> Vec<Line<'static>> {
+fn findings_lines(
+    dialog: &ActionDialog,
+    width: usize,
+    t: Theme,
+) -> Vec<Line<'static>> {
     let Op::Delete { form } = &dialog.op else {
         return vec![];
     };
     let mut lines = vec![label_line(
         &format!("Preflight  {}", form.path),
         width,
-        T.operator,
+        t.operator,
+        t,
     )];
     let all = &form.findings;
     let vis = 8.min(all.len());
     let start = dialog.view_scroll.min(all.len().saturating_sub(vis));
     for (i, l) in all.iter().skip(start).take(vis).enumerate() {
         let fg = if form.blocked {
-            T.red
+            t.red
         } else if i == 0 {
-            T.accent
+            t.accent
         } else {
-            T.fg
+            t.fg
         };
         let bg = if dialog.item() == Some(FocusItem::Warnings) && i == 0 {
-            T.bg_alt
+            t.bg_alt
         } else {
-            T.bg
+            t.bg
         };
         lines.push(fill(
             vec![Span::styled(trunc(l, width), st(fg, bg))],
@@ -970,12 +1024,16 @@ fn findings_lines(dialog: &ActionDialog, width: usize) -> Vec<Line<'static>> {
         ));
     }
     if all.len() > vis {
-        lines.push(label_line("↑↓ scroll", width, T.operator));
+        lines.push(label_line("↑↓ scroll", width, t.operator, t));
     }
     lines
 }
 
-fn confirm_body(dialog: &ActionDialog, width: usize) -> Vec<Line<'static>> {
+fn confirm_body(
+    dialog: &ActionDialog,
+    width: usize,
+    t: Theme,
+) -> Vec<Line<'static>> {
     let Op::Delete { form } = &dialog.op else {
         return vec![];
     };
@@ -984,25 +1042,36 @@ fn confirm_body(dialog: &ActionDialog, width: usize) -> Vec<Line<'static>> {
             width,
             &format!("Delete git worktree `{}`?", form.path),
             "Non-force git worktree remove. Link object only.",
+            t,
         ),
-        DeleteConfirm::Permanent => permanent_lines(dialog, width),
+        DeleteConfirm::Permanent => permanent_lines(dialog, width, t),
         DeleteConfirm::Trash => confirm_lines(
             width,
             &format!("Move `{}` to trash?", form.path),
             "Recoverable. [y/N] as a TUI choice.",
+            t,
         ),
     }
 }
 
-fn confirm_lines(width: usize, title: &str, note: &str) -> Vec<Line<'static>> {
-    let mut lines = vec![label_line(title, width, T.accent)];
+fn confirm_lines(
+    width: usize,
+    title: &str,
+    note: &str,
+    t: Theme,
+) -> Vec<Line<'static>> {
+    let mut lines = vec![label_line(title, width, t.accent, t)];
     for w in wrap_text(note, width) {
-        lines.push(label_line(&w, width, T.comment));
+        lines.push(label_line(&w, width, t.comment, t));
     }
     lines
 }
 
-fn permanent_lines(dialog: &ActionDialog, width: usize) -> Vec<Line<'static>> {
+fn permanent_lines(
+    dialog: &ActionDialog,
+    width: usize,
+    t: Theme,
+) -> Vec<Line<'static>> {
     let Op::Delete { form } = &dialog.op else {
         return vec![];
     };
@@ -1010,22 +1079,24 @@ fn permanent_lines(dialog: &ActionDialog, width: usize) -> Vec<Line<'static>> {
         label_line(
             &format!("Permanently delete `{}`.", form.path),
             width,
-            T.red,
+            t.red,
+            t,
         ),
-        label_line("Type the exact path to confirm:", width, T.comment),
+        label_line("Type the exact path to confirm:", width, t.comment, t),
         fill(
             field_spans(
                 form.perm.text(),
                 dialog.cursor(),
                 dialog.item() == Some(FocusItem::PermPath),
                 false,
+                t,
             ),
             width,
-            T.bg,
+            t.bg,
         ),
     ];
     if !form.perm.text().is_empty() && form.perm.text().trim() != form.path {
-        lines.push(label_line("path does not match", width, T.red));
+        lines.push(label_line("path does not match", width, t.red, t));
     }
     lines
 }

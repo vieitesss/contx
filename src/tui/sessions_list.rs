@@ -10,7 +10,6 @@ use ratatui::{
     text::{Line, Span},
     widgets::{StatefulWidget, Widget},
 };
-use terminal_colorsaurus::ThemeMode;
 
 use crate::{
     fuzzy::Match,
@@ -331,7 +330,7 @@ fn icon_with_head(
     theme: Theme,
 ) -> Vec<Span<'static>> {
     // Ordinary checkouts share git_icon blue; linked worktrees
-    // get the distinct teal. The name always stays git_icon,
+    // get the distinct cyan. The name always stays git_icon,
     // never bold like the icon.
     let icon_color = if linked {
         theme.worktree
@@ -559,7 +558,7 @@ pub(crate) fn git_spans(
 
 pub struct SessionsListState {
     pub(crate) scroll: usize,
-    pub(crate) theme_mode: ThemeMode,
+    pub(crate) theme: Theme,
     /// Last-known observed Git state: the observation module
     /// owns omitted-retain, so rendering only presents it.
     pub(crate) git: GitStates,
@@ -607,10 +606,10 @@ pub struct SessionsListState {
 }
 
 impl SessionsListState {
-    pub fn new(theme_mode: ThemeMode) -> Self {
+    pub fn new(theme: Theme) -> Self {
         Self {
             scroll: 0,
-            theme_mode,
+            theme,
             git: GitStates::new(),
             home: std::env::var("HOME").ok(),
             groups: HashMap::new(),
@@ -1543,7 +1542,7 @@ impl StatefulWidget for &Selection {
         if rows_visible == 0 {
             return;
         }
-        let theme = Theme::get(state.theme_mode);
+        let theme = state.theme;
         if n == 0 {
             render_empty(area, buf, self, theme);
             return;
@@ -1582,7 +1581,7 @@ fn render_grouped(
     buf: &mut Buffer,
     state: &mut SessionsListState,
 ) {
-    let theme = Theme::get(state.theme_mode);
+    let theme = state.theme;
     let width = area.width as usize;
     let list_h = area.height as usize;
     let matches = sel.matches();

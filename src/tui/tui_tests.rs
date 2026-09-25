@@ -18,7 +18,6 @@ use std::fs;
 use std::path::Path;
 use std::process::Command as GitCmd;
 use std::time::{Duration, Instant};
-use terminal_colorsaurus::ThemeMode;
 
 fn key(code: KeyCode) -> KeyEvent {
     KeyEvent::new(code, KeyModifiers::NONE)
@@ -34,7 +33,7 @@ fn two() -> Tui {
             SessionCandidate::new("/g1/a1".into(), "/g1".into()),
             SessionCandidate::new("/g1/a2".into(), "/g1".into()),
         ],
-        ThemeMode::Light,
+        Theme::ANSI,
     )
 }
 
@@ -315,7 +314,7 @@ fn hint_bar_fits_height_two_without_disabled_keys() {
     assert!(top.contains("Search:"), "{top}");
     assert!(last.contains("Ctrl-X") && last.contains("Ctrl-G"), "{last}");
     assert!(!last.contains("Delete"), "{last}");
-    let t = Theme::LIGHT;
+    let t = Theme::ANSI;
     let mut saw_operator = false;
     let mut saw_comment = false;
     for x in 0..80 {
@@ -384,7 +383,7 @@ fn prefix_paints_c_and_d_on_hint_bar_without_actions_row() {
     let buf = paint(&mut tui, 80, 24);
     let text = buf_text(&buf);
     assert!(!text.contains("Actions:"), "{text}");
-    let t = Theme::LIGHT;
+    let t = Theme::ANSI;
     let row23 = row_text(&buf, 23, 80);
     assert!(row23.contains("c Clone"), "{row23}");
     assert!(row23.contains("d Delete"), "{row23}");
@@ -407,7 +406,7 @@ fn prefix_selected_badge_highlights_key_only() {
     tui.handle_key(key(KeyCode::Char('k')));
     let buf = paint(&mut tui, 80, 24);
     let row = row_text(&buf, 23, 80);
-    let t = Theme::LIGHT;
+    let t = Theme::ANSI;
     let cx = hint_x(&row, "c Clone");
     // The badge pads both sides of the selected key.
     assert_eq!(buf[(cx - 1, 23)].bg, t.bg_alt, "{row}");
@@ -428,7 +427,7 @@ fn prefix_opening_menu_leaves_both_badges_unhighlighted() {
     tui.handle_key(ctrl('x'));
     let buf = paint(&mut tui, 80, 24);
     let row = row_text(&buf, 23, 80);
-    let t = Theme::LIGHT;
+    let t = Theme::ANSI;
     let cx = hint_x(&row, "c Clone");
     assert_eq!(buf[(cx, 23)].fg, t.comment, "{row}");
     assert!(!buf[(cx, 23)].modifier.contains(Modifier::BOLD), "{row}");
@@ -446,7 +445,7 @@ fn prefix_selected_delete_highlights_only_delete_badge() {
     tui.handle_key(key(KeyCode::Char('j')));
     let buf = paint(&mut tui, 80, 24);
     let row = row_text(&buf, 23, 80);
-    let t = Theme::LIGHT;
+    let t = Theme::ANSI;
     let cx = hint_x(&row, "c Clone");
     assert_eq!(buf[(cx, 23)].fg, t.comment, "{row}");
     assert!(!buf[(cx, 23)].modifier.contains(Modifier::BOLD), "{row}");
@@ -464,7 +463,7 @@ fn prefix_disabled_delete_badge_stays_dim() {
     tui.handle_key(ctrl('x'));
     let buf = paint(&mut tui, 80, 24);
     let row = row_text(&buf, 23, 80);
-    let t = Theme::LIGHT;
+    let t = Theme::ANSI;
     let dx = hint_x(&row, "d Delete");
     assert_eq!(buf[(dx, 23)].fg, t.comment, "{row}");
     assert_eq!(buf[(dx, 23)].bg, t.bg_alt, "{row}");
@@ -497,7 +496,7 @@ fn prefix_child_delete_chip_is_enabled_not_dimmed() {
     tui.handle_key(key(KeyCode::Enter));
     tui.handle_key(ctrl('x'));
     let buf = paint(&mut tui, 80, 24);
-    let t = Theme::LIGHT;
+    let t = Theme::ANSI;
     let row23 = row_text(&buf, 23, 80);
     let dx = hint_x(&row23, "d Delete");
     assert_eq!(buf[(dx, 23)].fg, t.comment, "{row23}");
@@ -522,7 +521,7 @@ fn hint_bar_shows_c_and_d_on_header_child_and_empty() {
     let child = bar(&mut tui);
     assert!(child.contains("d Delete"), "{child}");
 
-    let mut empty = Tui::new(&[], ThemeMode::Light);
+    let mut empty = Tui::new(&[], Theme::ANSI);
     empty.handle_key(ctrl('x'));
     let catalog = bar(&mut empty);
     assert!(catalog.contains("c Clone"), "{catalog}");
@@ -559,7 +558,7 @@ fn hint_bar_inspect_enables_after_completed_stage_selected() {
     tui.handle_key(ctrl('x'));
     tui.handle_key(key(KeyCode::Char('c')));
     tui.mark_dialog_child_started_for_test();
-    let t = Theme::LIGHT;
+    let t = Theme::ANSI;
     let buf = paint(&mut tui, 80, 24);
     let row = row_text(&buf, 23, 80);
     assert!(row.contains("i Inspect"), "{row}");
@@ -753,7 +752,7 @@ fn tui_for_repo(repo: &Path) -> Tui {
         git_from_home: false,
         config_existed: true,
     };
-    Tui::from_config(cfg, ThemeMode::Light)
+    Tui::from_config(cfg, Theme::ANSI)
 }
 
 fn pump_until(tui: &mut Tui, timeout: Duration, pred: impl Fn(&Tui) -> bool) {

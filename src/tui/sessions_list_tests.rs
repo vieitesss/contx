@@ -20,7 +20,6 @@ use ratatui::{
     style::{Color, Modifier},
     widgets::{StatefulWidget, Widget},
 };
-use terminal_colorsaurus::ThemeMode;
 
 fn selection(paths: &[&str]) -> Selection {
     Selection::new(&paths.iter().map(|s| s.to_string()).collect::<Vec<_>>())
@@ -55,19 +54,19 @@ fn list_layout_constants_single_column_two_rows() {
     assert_eq!(GIT_INDENT, 4);
 
     let sel = selection(&["/alpha", "/beta"]);
-    let mut state = SessionsListState::new(ThemeMode::Light);
+    let mut state = SessionsListState::new(Theme::ANSI);
     let _ = render_list(&sel, &mut state, 64, 4);
 }
 
 #[test]
 fn selected_item_uses_full_width_tint_without_borders() {
     let sel = selection(&["/alpha", "/beta"]);
-    let mut state = SessionsListState::new(ThemeMode::Light);
+    let mut state = SessionsListState::new(Theme::ANSI);
     // Two items, two rows each.
     let buf = render_list(&sel, &mut state, 40, 4);
-    let bg_alt = Color::Rgb(0xEA, 0xE7, 0xE1);
-    let bg = Color::Rgb(0xF5, 0xF5, 0xF5);
-    let fg = Color::Rgb(0x28, 0x28, 0x28);
+    let bg_alt = Theme::ANSI.bg_alt;
+    let bg = Theme::ANSI.bg;
+    let fg = Theme::ANSI.fg;
     // Selected first item: full-width tint on both rows, indented
     // path, no selection arrow.
     assert_eq!(buf[(0, 0)].bg, bg_alt);
@@ -104,7 +103,7 @@ fn selected_item_uses_full_width_tint_without_borders() {
 
 #[test]
 fn git_spans_nonrepo_measurable_and_weight() {
-    let theme = Theme::LIGHT;
+    let theme = Theme::ANSI;
     let nonrepo = CandidateState {
         root: None,
         linked: false,
@@ -151,7 +150,7 @@ fn git_spans_nonrepo_measurable_and_weight() {
 #[test]
 fn tiny_areas_do_not_panic() {
     let sel = selection(&["/a", "/b", "/c"]);
-    let mut state = SessionsListState::new(ThemeMode::Light);
+    let mut state = SessionsListState::new(Theme::ANSI);
     let mut buf = Buffer::empty(Rect::new(0, 0, 10, 10));
     for (w, h) in [(0, 0), (1, 1), (2, 2), (3, 3), (10, 2), (2, 10), (5, 5)] {
         sel.render(Rect::new(0, 0, w, h), &mut buf, &mut state);
@@ -163,7 +162,7 @@ fn scroll_moves_in_item_row_steps() {
     let mut sel = selection(&["/a", "/b", "/c", "/d", "/e"]);
     sel.handle_key(key(KeyCode::End));
     assert_eq!(sel.selected_line(), 5);
-    let mut state = SessionsListState::new(ThemeMode::Light);
+    let mut state = SessionsListState::new(Theme::ANSI);
     // Two item-rows visible (height 4, two rows per item).
     let buf = render_list(&sel, &mut state, 40, 4);
     assert_eq!(state.scroll, 3);
@@ -179,7 +178,7 @@ fn scroll_moves_in_item_row_steps() {
 fn selected_item_above_viewport_scrolls_back_into_view() {
     let mut sel = selection(&["/a", "/b", "/c", "/d", "/e"]);
     // Same persistent state across renders, like the TUI event loop.
-    let mut state = SessionsListState::new(ThemeMode::Light);
+    let mut state = SessionsListState::new(Theme::ANSI);
     // Scroll to the bottom first so the first item leaves the viewport.
     sel.handle_key(key(KeyCode::End));
     assert_eq!(sel.selected_line(), 5);
@@ -199,7 +198,7 @@ fn selected_item_above_viewport_scrolls_back_into_view() {
 
 #[test]
 fn filter_label_is_visible_on_the_top_row() {
-    let mut tui = crate::tui::Tui::new(&[], ThemeMode::Light);
+    let mut tui = crate::tui::Tui::new(&[], Theme::ANSI);
     let area = Rect::new(0, 0, 40, 5);
     let mut buf = Buffer::empty(area);
     Widget::render(&mut tui, area, &mut buf);
@@ -219,10 +218,10 @@ fn rendered_path_hits_paint_yellow_in_query_order() {
         sel.handle_key(key(KeyCode::Char(c)));
     }
     assert_eq!(sel.matches().len(), 1);
-    let mut state = SessionsListState::new(ThemeMode::Light);
+    let mut state = SessionsListState::new(Theme::ANSI);
     let buf = render_list(&sel, &mut state, 40, 2);
-    let yellow = Theme::LIGHT.accent;
-    let fg = Color::Rgb(0x28, 0x28, 0x28);
+    let yellow = Theme::ANSI.accent;
+    let fg = Theme::ANSI.fg;
     // Yellow cells on the path row spell the query; neighbours stay plain.
     let hit_text: String = (0..40)
         .filter(|&x| buf[(x, 0)].fg == yellow)
@@ -240,12 +239,12 @@ fn rendered_path_hits_paint_yellow_in_query_order() {
 fn empty_catalog_states_no_candidates() {
     let sel = selection(&[]);
     assert!(!sel.has_candidates());
-    let mut state = SessionsListState::new(ThemeMode::Light);
+    let mut state = SessionsListState::new(Theme::ANSI);
     let buf = render_list(&sel, &mut state, 40, 4);
     let row = row_text(&buf, 0, 40);
     assert!(row.contains("no session candidates"), "empty copy: {row}");
     assert!(!row.contains("no matches"), "not a filter miss: {row}");
-    let comment = Color::Rgb(0x45, 0x55, 0x4D);
+    let comment = Theme::ANSI.comment;
     assert_eq!(buf[(4, 0)].fg, comment);
 }
 
@@ -256,17 +255,17 @@ fn filter_miss_states_no_matches_with_query() {
     sel.handle_key(key(KeyCode::Char('q')));
     sel.handle_key(key(KeyCode::Char('q')));
     assert!(sel.matches().is_empty());
-    let mut state = SessionsListState::new(ThemeMode::Light);
+    let mut state = SessionsListState::new(Theme::ANSI);
     let buf = render_list(&sel, &mut state, 40, 4);
     let row = row_text(&buf, 0, 40);
     assert!(row.contains("no matches for \"qq\""), "miss copy: {row}");
-    let comment = Color::Rgb(0x45, 0x55, 0x4D);
+    let comment = Theme::ANSI.comment;
     assert_eq!(buf[(4, 0)].fg, comment);
 }
 
 #[test]
 fn empty_tui_keeps_search_chrome_with_cursor() {
-    let mut tui = crate::tui::Tui::new(&[], ThemeMode::Light);
+    let mut tui = crate::tui::Tui::new(&[], Theme::ANSI);
     let area = Rect::new(0, 0, 40, 5);
     let mut buf = Buffer::empty(area);
     Widget::render(&mut tui, area, &mut buf);
@@ -283,7 +282,7 @@ fn empty_tui_keeps_search_chrome_with_cursor() {
 #[test]
 fn git_line_renders_measurable_pair_on_line_two() {
     let sel = selection(&["/alpha"]);
-    let mut state = SessionsListState::new(ThemeMode::Light);
+    let mut state = SessionsListState::new(Theme::ANSI);
     state.git.apply(vec![(
         "/alpha".to_string(),
         CandidateState {
@@ -307,8 +306,8 @@ fn git_line_renders_measurable_pair_on_line_two() {
     assert!(git_row.starts_with("    "), "git indent: {git_row}");
     assert!(git_row.contains("+3 −12"), "paired counts: {git_row}");
     // Counts keep their own colors on the tinted row.
-    let green = Color::Rgb(0x82, 0xA7, 0x62);
-    let red = Color::Rgb(0x98, 0x22, 0x2A);
+    let green = Theme::ANSI.green;
+    let red = Theme::ANSI.red;
     let plus = (0..40).find(|&x| buf[(x, 1)].symbol() == "+").unwrap();
     let minus = (0..40).find(|&x| buf[(x, 1)].symbol() == "−").unwrap();
     assert_eq!(buf[(plus, 1)].fg, green);
@@ -318,7 +317,7 @@ fn git_line_renders_measurable_pair_on_line_two() {
 #[test]
 fn git_line_states_loading_failed_marker_nonrepo() {
     let sel = selection(&["/a", "/b", "/c", "/d"]);
-    let mut state = SessionsListState::new(ThemeMode::Light);
+    let mut state = SessionsListState::new(Theme::ANSI);
     // "/a" stays unknown: still resolving.
     state.git.apply(vec![
         (
@@ -376,7 +375,7 @@ fn git_line_states_loading_failed_marker_nonrepo() {
 #[test]
 fn narrow_width_keeps_basename_and_drops_counts_together() {
     let sel = selection(&["/p/very-long-parent/ab"]);
-    let mut state = SessionsListState::new(ThemeMode::Light);
+    let mut state = SessionsListState::new(Theme::ANSI);
     state.git.apply(vec![(
         "/p/very-long-parent/ab".to_string(),
         CandidateState {
@@ -420,7 +419,7 @@ fn upstream_state(state: WorkState, upstream: Upstream) -> CandidateState {
 }
 
 fn spans_text(state: &CandidateState, w: usize) -> String {
-    git_spans(Some(state), w, Theme::LIGHT)
+    git_spans(Some(state), w, Theme::ANSI)
         .iter()
         .map(|s| s.content.as_ref())
         .collect()
@@ -471,7 +470,7 @@ fn git_spans_omits_pr_when_no_pr_or_insufficient_width() {
 fn git_spans_shows_branch_after_icon_before_dirty() {
     // Clean + branch: icon, name, nothing else.
     let clean = named_state(WorkState::Clean, "topic", Upstream::Absent);
-    let spans = git_spans(Some(&clean), 20, Theme::LIGHT);
+    let spans = git_spans(Some(&clean), 20, Theme::ANSI);
     let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
     assert_eq!(text, "\u{ec6f} topic");
     // Pair order: icon, name, local counts, then arrows.
@@ -499,7 +498,7 @@ fn git_spans_shows_branch_after_icon_before_dirty() {
     assert_eq!(spans_text(&marked, 20), "\u{ec6f} topic • ↓3");
     // The name paints `git_icon`, never bold like the icon.
     let name = spans.iter().find(|s| s.content == "topic").expect("name");
-    assert_eq!(name.style.fg, Some(Theme::LIGHT.git_icon));
+    assert_eq!(name.style.fg, Some(Theme::ANSI.git_icon));
     assert!(
         !name.style.add_modifier.contains(Modifier::BOLD),
         "name stays normal weight",
@@ -533,7 +532,7 @@ fn git_spans_omits_head_on_failed_resolve_and_loading() {
     let text = spans_text(&failed, 20);
     assert!(!text.contains("topic"), "failed resolution: {text}");
     // Loading stays the ellipsis, never a name.
-    let text: String = git_spans(None, 20, Theme::LIGHT)
+    let text: String = git_spans(None, 20, Theme::ANSI)
         .iter()
         .map(|s| s.content.as_ref())
         .collect();
@@ -588,7 +587,7 @@ fn narrow_width_drops_upstream_then_dirty_then_head() {
 #[test]
 fn git_line_renders_branch_on_clean_and_dirty_rows() {
     let sel = selection(&["/main", "/side"]);
-    let mut state = SessionsListState::new(ThemeMode::Light);
+    let mut state = SessionsListState::new(Theme::ANSI);
     state.git.apply(vec![
         (
             "/main".to_string(),
@@ -630,8 +629,8 @@ fn git_line_renders_branch_on_clean_and_dirty_rows() {
 
 #[test]
 fn git_spans_upstream_arrows_beside_local_state() {
-    let red = Color::Rgb(0x98, 0x22, 0x2A);
-    let green = Color::Rgb(0x82, 0xA7, 0x62);
+    let red = Theme::ANSI.red;
+    let green = Theme::ANSI.green;
     // Clean + behind: icon and one red arrow, no counts.
     let behind = upstream_state(
         WorkState::Clean,
@@ -640,7 +639,7 @@ fn git_spans_upstream_arrows_beside_local_state() {
             behind: 1,
         },
     );
-    let spans = git_spans(Some(&behind), 20, Theme::LIGHT);
+    let spans = git_spans(Some(&behind), 20, Theme::ANSI);
     let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
     assert!(text.contains("↓1"), "behind arrow: {text}");
     assert!(!text.contains('+') && !text.contains('−'));
@@ -662,7 +661,7 @@ fn git_spans_upstream_arrows_beside_local_state() {
     let text = spans_text(&ahead, 20);
     assert!(text.contains("↑2"), "ahead arrow: {text}");
     assert!(!text.contains('↓'));
-    let spans = git_spans(Some(&ahead), 20, Theme::LIGHT);
+    let spans = git_spans(Some(&ahead), 20, Theme::ANSI);
     let arrow = spans.iter().find(|s| s.content.contains('↑')).unwrap();
     assert_eq!(arrow.style.fg, Some(green));
     // Marker + behind: marker keeps its accent, arrow follows.
@@ -816,7 +815,7 @@ fn narrow_band_never_reattaches_upstream_after_local_drop() {
 #[test]
 fn git_line_renders_upstream_on_clean_and_dirty_rows() {
     let sel = selection(&["/behind", "/diverged"]);
-    let mut state = SessionsListState::new(ThemeMode::Light);
+    let mut state = SessionsListState::new(Theme::ANSI);
     state.git.apply(vec![
         (
             "/behind".to_string(),
@@ -892,14 +891,14 @@ fn render_case(
     h: u16,
 ) -> Buffer {
     let sel = typed_selection(paths, query);
-    let mut state = SessionsListState::new(ThemeMode::Light);
+    let mut state = SessionsListState::new(Theme::ANSI);
     state.home = home.map(str::to_string);
     render_list(&sel, &mut state, w, h)
 }
 
 /// Visible characters painted with the hit style on row `y`.
 fn hit_spelling(buf: &Buffer, y: u16, w: u16) -> String {
-    let yellow = Theme::LIGHT.accent;
+    let yellow = Theme::ANSI.accent;
     (0..w)
         .filter(|&x| buf[(x, y)].fg == yellow)
         .map(|x| buf[(x, y)].symbol().to_string())
@@ -907,7 +906,7 @@ fn hit_spelling(buf: &Buffer, y: u16, w: u16) -> String {
 }
 
 fn hit_count(buf: &Buffer, y: u16, w: u16) -> usize {
-    let yellow = Theme::LIGHT.accent;
+    let yellow = Theme::ANSI.accent;
     (0..w).filter(|&x| buf[(x, y)].fg == yellow).count()
 }
 
@@ -931,7 +930,7 @@ fn rendered_prefix_basename_shortening_keeps_basename_hit() {
     assert_eq!(hit_spelling(&buf, 0, 12), "n");
     // ... while the inserted shortening ellipsis never paints.
     let ell = (0..12).find(|&x| buf[(x, 0)].symbol() == "…").unwrap();
-    assert_ne!(buf[(ell, 0)].fg, Theme::LIGHT.accent);
+    assert_ne!(buf[(ell, 0)].fg, Theme::ANSI.accent);
 }
 
 #[test]
@@ -999,7 +998,7 @@ fn rendered_home_collapse_keeps_tail_hits_drops_prefix_hits() {
     assert!(row.contains("~/projects/alpha"), "shaped: {row}");
     assert_eq!(hit_count(&buf, 0, 40), 0, "prefix hit gone");
     // The inserted `~` itself is never painted as a hit.
-    assert_ne!(buf[(2, 0)].fg, Theme::LIGHT.accent);
+    assert_ne!(buf[(2, 0)].fg, Theme::ANSI.accent);
 }
 
 #[test]
@@ -1051,11 +1050,11 @@ fn rendered_literal_leading_ellipsis_keeps_prefix_hits() {
     assert_eq!(row, "  …/…bbb");
     assert_eq!(hit_spelling(&buf, 0, 8), "…b");
     let xs: Vec<u16> = (0..8)
-        .filter(|&x| buf[(x, 0)].fg == Theme::LIGHT.accent)
+        .filter(|&x| buf[(x, 0)].fg == Theme::ANSI.accent)
         .collect();
     assert_eq!(xs, vec![2, 5], "prefix and basename cells: {row}");
     // The inserted `…` (visible index 2) is never a hit.
-    assert_ne!(buf[(4, 0)].fg, Theme::LIGHT.accent);
+    assert_ne!(buf[(4, 0)].fg, Theme::ANSI.accent);
 }
 
 #[test]
@@ -1077,13 +1076,13 @@ fn rendered_selected_row_tint_keeps_hits() {
     // First item is selected: full-width tint plus the hit.
     assert_eq!(hit_spelling(&buf, 0, 40), "a");
     let x = (0..40)
-        .find(|&x| buf[(x, 0)].fg == Theme::LIGHT.accent)
+        .find(|&x| buf[(x, 0)].fg == Theme::ANSI.accent)
         .expect("hit on selected row");
-    assert_eq!(buf[(x, 0)].bg, Theme::LIGHT.bg_alt);
-    assert_eq!(buf[(39, 0)].bg, Theme::LIGHT.bg_alt);
+    assert_eq!(buf[(x, 0)].bg, Theme::ANSI.bg_alt);
+    assert_eq!(buf[(39, 0)].bg, Theme::ANSI.bg_alt);
     // Second item keeps the base background with its own hit.
     assert_eq!(hit_spelling(&buf, 2, 40), "a");
-    assert_eq!(buf[(39, 2)].bg, Theme::LIGHT.bg);
+    assert_eq!(buf[(39, 2)].bg, Theme::ANSI.bg);
 }
 
 #[test]
@@ -1091,7 +1090,7 @@ fn rendered_adjacent_hits_read_continuous() {
     let buf = render_case(&["/alpha"], Some(FAR_HOME), "alp", 40, 2);
     assert_eq!(hit_spelling(&buf, 0, 40), "alp");
     let xs: Vec<u16> = (0..40)
-        .filter(|&x| buf[(x, 0)].fg == Theme::LIGHT.accent)
+        .filter(|&x| buf[(x, 0)].fg == Theme::ANSI.accent)
         .collect();
     assert_eq!(xs.len(), 3);
     assert_eq!(xs[2] - xs[0], 2, "contiguous: {xs:?}");
@@ -1102,7 +1101,7 @@ fn rendered_disjoint_hits_stay_separate() {
     let buf = render_case(&["/axbxc"], Some(FAR_HOME), "abc", 40, 2);
     assert_eq!(hit_spelling(&buf, 0, 40), "abc");
     let xs: Vec<u16> = (0..40)
-        .filter(|&x| buf[(x, 0)].fg == Theme::LIGHT.accent)
+        .filter(|&x| buf[(x, 0)].fg == Theme::ANSI.accent)
         .collect();
     assert_eq!(xs.len(), 3);
     assert!(xs[2] - xs[0] > 2, "gaps survive: {xs:?}");
@@ -1111,7 +1110,7 @@ fn rendered_disjoint_hits_stay_separate() {
 #[test]
 fn rendered_git_line_unaffected_by_path_shaping() {
     let sel = typed_selection(&["/x/very-long-parent/name"], "n");
-    let mut state = SessionsListState::new(ThemeMode::Light);
+    let mut state = SessionsListState::new(Theme::ANSI);
     state.home = Some(FAR_HOME.to_string());
     state.git.apply(vec![(
         "/x/very-long-parent/name".to_string(),
@@ -1149,7 +1148,7 @@ fn rendered_shaping_leaves_ranking_and_query_alone() {
 #[test]
 fn rendered_tiny_areas_with_query_do_not_panic() {
     let sel = typed_selection(&["/a", "/b", "/c"], "a");
-    let mut state = SessionsListState::new(ThemeMode::Light);
+    let mut state = SessionsListState::new(Theme::ANSI);
     state.home = Some(FAR_HOME.to_string());
     let mut buf = Buffer::empty(Rect::new(0, 0, 10, 10));
     for (w, h) in [(0, 0), (1, 1), (2, 2), (3, 3), (10, 2), (2, 10), (5, 5)] {
@@ -1162,15 +1161,15 @@ fn rendered_tiny_areas_with_query_do_not_panic() {
 /// between groups. These tests target production `render_list`
 /// with `state.groups` set directly: grouping is presentation
 /// over `Selection` matches, so no config or git polling is
-/// involved. Layout/nest/hit/teal/scroll cases fail until the
+/// involved. Layout/nest/hit/worktree-color/scroll cases fail until the
 /// grouping render lands; navigation locks hold throughout.
-const GROUP_TEAL: Color = Color::Rgb(0x3D, 0x7A, 0x6F);
+const GROUP_WORKTREE: Color = Theme::ANSI.worktree;
 
 /// SessionsListState with config groups assigned directly
 /// (same pattern as `state.git` / `state.home` above), so
 /// grouping stays presentation over matches.
 fn grouped_state(groups: &[(&str, &str)]) -> SessionsListState {
-    let mut state = SessionsListState::new(ThemeMode::Light);
+    let mut state = SessionsListState::new(Theme::ANSI);
     state.home = Some(FAR_HOME.to_string());
     for (path, group) in groups {
         state.groups.insert(path.to_string(), group.to_string());
@@ -1209,8 +1208,8 @@ fn grouped_headers_render_comment_without_tint_or_glyph() {
         ("/other/beta", "/other"),
     ]);
     let buf = render_list(&sel, &mut state, 40, 20);
-    let comment = Theme::LIGHT.comment;
-    let bg = Theme::LIGHT.bg;
+    let comment = Theme::ANSI.comment;
+    let bg = Theme::ANSI.bg;
     // First group header: indented, comment, base background.
     let header = row_text(&buf, 0, 40);
     assert!(header.starts_with("  \u{25be} /parent"), "header: {header}");
@@ -1249,9 +1248,9 @@ fn grouped_folded_header_shows_glyph_count_and_tint() {
         header.starts_with("  \u{25b8} /parent (2)"),
         "folded: {header}"
     );
-    assert_eq!(buf[(0, 0)].bg, Theme::LIGHT.bg_alt);
-    assert_eq!(buf[(39, 0)].bg, Theme::LIGHT.bg_alt);
-    assert_eq!(buf[(2, 0)].fg, Theme::LIGHT.comment);
+    assert_eq!(buf[(0, 0)].bg, Theme::ANSI.bg_alt);
+    assert_eq!(buf[(39, 0)].bg, Theme::ANSI.bg_alt);
+    assert_eq!(buf[(2, 0)].fg, Theme::ANSI.comment);
     let all: String = (0..8)
         .map(|y| row_text(&buf, y, 40))
         .collect::<Vec<_>>()
@@ -1262,7 +1261,7 @@ fn grouped_folded_header_shows_glyph_count_and_tint() {
     let other = row_text(&buf, 2, 40);
     assert!(other.starts_with("  \u{25be} /other"), "open: {other}");
     assert!(!other.contains('('), "no count: {other}");
-    assert_eq!(buf[(0, 2)].bg, Theme::LIGHT.bg);
+    assert_eq!(buf[(0, 2)].bg, Theme::ANSI.bg);
 }
 
 #[test]
@@ -1273,7 +1272,7 @@ fn grouped_children_show_remainder_only_with_tree_spine() {
         ("/parent/beta", "/parent"),
     ]);
     let buf = render_list(&sel, &mut state, 40, 20);
-    let comment = Theme::LIGHT.comment;
+    let comment = Theme::ANSI.comment;
     // Non-last child branches; last child corners.
     let first = row_text(&buf, 1, 40);
     assert!(first.starts_with("  \u{251c} alpha"), "first: {first}");
@@ -1336,8 +1335,8 @@ fn grouped_selection_tint_covers_selected_child_only() {
         ("/parent/beta", "/parent"),
     ]);
     let buf = render_list(&sel, &mut state, 40, 20);
-    let bg = Theme::LIGHT.bg;
-    let bg_alt = Theme::LIGHT.bg_alt;
+    let bg = Theme::ANSI.bg;
+    let bg_alt = Theme::ANSI.bg_alt;
     // Header never tinted; unselected child keeps the base.
     assert!(row_text(&buf, 0, 40).starts_with("  \u{25be} /parent"));
     assert_eq!(buf[(0, 0)].bg, bg);
@@ -1361,7 +1360,7 @@ fn grouped_hits_paint_yellow_on_remainder_only() {
 }
 
 #[test]
-fn grouped_linked_icon_is_teal_ordinary_stays_blue() {
+fn grouped_linked_icon_is_cyan_ordinary_stays_blue() {
     let sel = selection(&["/parent/main", "/parent/side"]);
     let mut state = grouped_state(&[
         ("/parent/main", "/parent"),
@@ -1372,17 +1371,17 @@ fn grouped_linked_icon_is_teal_ordinary_stays_blue() {
         grouped_git("/parent/side", true, None),
     ]);
     let buf = render_list(&sel, &mut state, 40, 20);
-    let git_icon = Theme::LIGHT.git_icon;
+    let git_icon = Theme::ANSI.git_icon;
     // Ordinary icon stays git_icon blue ...
     let ox = (0..40)
         .find(|&x| buf[(x, 2)].symbol() == "\u{ec6f}")
         .expect("ordinary icon on row 2");
     assert_eq!(buf[(ox, 2)].fg, git_icon);
-    // ... while the linked icon is a distinct teal.
+    // ... while the linked icon is a distinct cyan.
     let lx = (0..40)
         .find(|&x| buf[(x, 4)].symbol() == "\u{ec7d}")
         .expect("linked icon on row 4");
-    assert_eq!(buf[(lx, 4)].fg, GROUP_TEAL);
+    assert_eq!(buf[(lx, 4)].fg, GROUP_WORKTREE);
 }
 
 #[test]
@@ -1460,9 +1459,9 @@ fn grouped_navigation_skips_headers_and_blanks() {
     let mut state = grouped_state(&groups);
     let buf = render_list(&sel, &mut state, 40, 20);
     // Tint sits on the last child's two rows; headers stay base.
-    assert_eq!(buf[(0, 0)].bg, Theme::LIGHT.bg);
-    assert_eq!(buf[(0, 7)].bg, Theme::LIGHT.bg_alt);
-    assert_eq!(buf[(0, 8)].bg, Theme::LIGHT.bg_alt);
+    assert_eq!(buf[(0, 0)].bg, Theme::ANSI.bg);
+    assert_eq!(buf[(0, 7)].bg, Theme::ANSI.bg_alt);
+    assert_eq!(buf[(0, 8)].bg, Theme::ANSI.bg_alt);
     // Home/End land on the first/last child.
     sel.handle_key(key(KeyCode::Home));
     assert_eq!(sel.selected_line(), 1);
@@ -1470,8 +1469,8 @@ fn grouped_navigation_skips_headers_and_blanks() {
     assert_eq!(sel.selected_line(), 1);
     let mut state = grouped_state(&groups);
     let buf = render_list(&sel, &mut state, 40, 20);
-    assert_eq!(buf[(0, 1)].bg, Theme::LIGHT.bg_alt);
-    assert_eq!(buf[(0, 0)].bg, Theme::LIGHT.bg);
+    assert_eq!(buf[(0, 1)].bg, Theme::ANSI.bg_alt);
+    assert_eq!(buf[(0, 0)].bg, Theme::ANSI.bg);
 }
 
 #[test]
@@ -1516,7 +1515,7 @@ fn grouped_spine_glyphs_allowed_but_frames_forbidden() {
     let buf = render_list(&sel, &mut state, 40, 20);
     // The spine reads in the indent columns, comment-colored.
     assert_eq!(buf[(2, 1)].symbol(), "\u{251c}");
-    assert_eq!(buf[(2, 1)].fg, Theme::LIGHT.comment);
+    assert_eq!(buf[(2, 1)].fg, Theme::ANSI.comment);
     // Item frames never appear, spine or not.
     for y in 0..5 {
         let row = row_text(&buf, y, 40);
@@ -1583,9 +1582,9 @@ fn grouped_header_paints_prefix_hits_that_survive_abbreviation() {
         "header: {header}"
     );
     assert_eq!(hit_spelling(&buf, 0, 40), "pre-vieitesss");
-    assert_ne!(buf[(2, 0)].fg, Theme::LIGHT.accent, "glyph: {header}");
+    assert_ne!(buf[(2, 0)].fg, Theme::ANSI.accent, "glyph: {header}");
     let tilde = (0..40).find(|&x| buf[(x, 0)].symbol() == "~").unwrap();
-    assert_ne!(buf[(tilde, 0)].fg, Theme::LIGHT.accent, "~ : {header}");
+    assert_ne!(buf[(tilde, 0)].fg, Theme::ANSI.accent, "~ : {header}");
     let path = row_text(&buf, 1, 40);
     assert!(path.contains("claims"), "remainder: {path}");
     assert_eq!(hit_spelling(&buf, 1, 40), "claims");
@@ -1602,7 +1601,7 @@ fn grouped_header_paints_prefix_hits_that_survive_abbreviation() {
     );
     assert_eq!(hit_spelling(&buf, 0, 40), "", "home hit gone: {header}");
     let tilde = (0..40).find(|&x| buf[(x, 0)].symbol() == "~").unwrap();
-    assert_ne!(buf[(tilde, 0)].fg, Theme::LIGHT.accent);
+    assert_ne!(buf[(tilde, 0)].fg, Theme::ANSI.accent);
     assert_eq!(hit_spelling(&buf, 1, 40), "claims");
 }
 
@@ -1628,9 +1627,9 @@ fn grouped_query_orders_groups_by_best_match() {
     let buf = render_list(&sel, &mut state, 40, 20);
     assert!(row_text(&buf, 0, 40).starts_with("  \u{25be} /g2"));
     // Unfolded headers never enter Selection and never tint.
-    assert_eq!(buf[(0, 0)].bg, Theme::LIGHT.bg);
-    assert_eq!(buf[(39, 0)].bg, Theme::LIGHT.bg);
-    assert_eq!(buf[(0, 1)].bg, Theme::LIGHT.bg_alt);
+    assert_eq!(buf[(0, 0)].bg, Theme::ANSI.bg);
+    assert_eq!(buf[(39, 0)].bg, Theme::ANSI.bg);
+    assert_eq!(buf[(0, 1)].bg, Theme::ANSI.bg_alt);
     let second = (0..20)
         .map(|y| row_text(&buf, y, 40))
         .find(|r| r.starts_with("  \u{25be} /g1"))
@@ -1950,9 +1949,9 @@ fn visual_next_prev_walk_children_not_fuzzy_neighbors() {
     assert_eq!(sel.selected_line(), 2);
     let buf = render_list(&sel, &mut state, 40, 20);
     // Layout: header, child, git, blank, header, child, git.
-    assert_eq!(buf[(0, 5)].bg, Theme::LIGHT.bg_alt);
-    assert_eq!(buf[(0, 6)].bg, Theme::LIGHT.bg_alt);
-    assert_eq!(buf[(0, 1)].bg, Theme::LIGHT.bg);
+    assert_eq!(buf[(0, 5)].bg, Theme::ANSI.bg_alt);
+    assert_eq!(buf[(0, 6)].bg, Theme::ANSI.bg_alt);
+    assert_eq!(buf[(0, 1)].bg, Theme::ANSI.bg);
     // Next lands on the weaker /g1 remainder; the last child holds.
     apply_visual_motion(&mut sel, &mut state, VisualMotion::Next);
     assert_eq!(sel.selected_line(), 3);
@@ -1966,8 +1965,8 @@ fn visual_next_prev_walk_children_not_fuzzy_neighbors() {
     assert_eq!(sel.selected_line(), 3);
     // Last tints the trailing /g1 run: blank + header + child + git.
     let buf = render_list(&sel, &mut state, 40, 20);
-    assert_eq!(buf[(0, 9)].bg, Theme::LIGHT.bg_alt);
-    assert_eq!(buf[(0, 10)].bg, Theme::LIGHT.bg_alt);
+    assert_eq!(buf[(0, 9)].bg, Theme::ANSI.bg_alt);
+    assert_eq!(buf[(0, 10)].bg, Theme::ANSI.bg_alt);
 }
 
 #[test]
@@ -1976,7 +1975,7 @@ fn visual_motion_matches_rank_order_without_groups() {
     // empty list never moves.
     let mut sel = typed_selection(&["/x/azb", "/y/ab"], "ab");
     assert_eq!(sel.matches()[0].entry, "/y/ab");
-    let mut state = SessionsListState::new(ThemeMode::Light);
+    let mut state = SessionsListState::new(Theme::ANSI);
     state.home = Some(FAR_HOME.to_string());
     apply_visual_motion(&mut sel, &mut state, VisualMotion::Next);
     assert_eq!(sel.selected_line(), 2);
@@ -2197,13 +2196,13 @@ fn enter_expands_folded_header_left_collapses_child() {
     let buf = render_list(&sel, &mut state, 40, 20);
     let path = row_text(&buf, 1, 40);
     assert!(path.contains("a1"), "first child: {path}");
-    assert_eq!(buf[(0, 1)].bg, Theme::LIGHT.bg_alt);
+    assert_eq!(buf[(0, 1)].bg, Theme::ANSI.bg_alt);
     collapse_group(&mut state, "/g1", 0);
     assert_eq!(state.active_header, Some((0, 0)));
     let buf = render_list(&sel, &mut state, 40, 20);
     let header = row_text(&buf, 0, 40);
     assert!(header.starts_with("  \u{25b8} /g1 (2)"), "{header}");
-    assert_eq!(buf[(0, 0)].bg, Theme::LIGHT.bg_alt);
+    assert_eq!(buf[(0, 0)].bg, Theme::ANSI.bg_alt);
     assert!(!row_text(&buf, 1, 40).contains("a1"));
 }
 
@@ -2213,12 +2212,12 @@ fn home_end_on_folded_list_tint_first_and_last_headers() {
     apply_query_folds(&mut state, &mut sel);
     apply_visual_motion(&mut sel, &mut state, VisualMotion::First);
     let buf = render_list(&sel, &mut state, 40, 20);
-    assert_eq!(buf[(0, 0)].bg, Theme::LIGHT.bg_alt);
-    assert_eq!(buf[(0, 2)].bg, Theme::LIGHT.bg);
+    assert_eq!(buf[(0, 0)].bg, Theme::ANSI.bg_alt);
+    assert_eq!(buf[(0, 2)].bg, Theme::ANSI.bg);
     apply_visual_motion(&mut sel, &mut state, VisualMotion::Last);
     let buf = render_list(&sel, &mut state, 40, 20);
-    assert_eq!(buf[(0, 0)].bg, Theme::LIGHT.bg);
-    assert_eq!(buf[(0, 2)].bg, Theme::LIGHT.bg_alt);
+    assert_eq!(buf[(0, 0)].bg, Theme::ANSI.bg);
+    assert_eq!(buf[(0, 2)].bg, Theme::ANSI.bg_alt);
     apply_visual_motion(&mut sel, &mut state, VisualMotion::Prev);
     assert_eq!(state.active_header, Some((0, 0)));
 }
@@ -2310,8 +2309,8 @@ fn grouped_query_lists_only_remainder_matching_children() {
     // header stays unhighlighted and off Selection.
     assert_eq!(hit_spelling(&buf, 0, 40), "");
     assert!(row_text(&buf, 0, 40).starts_with("  \u{25be} /config"));
-    assert_eq!(buf[(0, 0)].bg, Theme::LIGHT.bg);
-    assert_eq!(buf[(39, 0)].bg, Theme::LIGHT.bg);
+    assert_eq!(buf[(0, 0)].bg, Theme::ANSI.bg);
+    assert_eq!(buf[(39, 0)].bg, Theme::ANSI.bg);
     assert_eq!(
         visual_entries(&sel, &state),
         vec![VisualTarget::Child("/config/github".to_string())]
@@ -2360,8 +2359,8 @@ fn grouped_empty_query_preserves_resolved_group_order() {
     let buf = render_list(&sel, &mut state, 40, 20);
     assert!(row_text(&buf, 0, 40).starts_with("  \u{25b8} /g1"));
     assert!(row_text(&buf, 2, 40).starts_with("  \u{25b8} /g2"));
-    assert_eq!(buf[(0, 0)].bg, Theme::LIGHT.bg);
-    assert_eq!(buf[(0, 2)].bg, Theme::LIGHT.bg);
+    assert_eq!(buf[(0, 0)].bg, Theme::ANSI.bg);
+    assert_eq!(buf[(0, 2)].bg, Theme::ANSI.bg);
 }
 
 #[test]
@@ -2692,7 +2691,7 @@ fn grouped_users_query_drops_collapsed_users_hits_on_header() {
     assert!(header.starts_with("  \u{25b8} ~/work (1)"), "{header}");
     assert_eq!(hit_spelling(&buf, 0, 40), "", "users collapsed: {header}");
     let tilde = (0..40).find(|&x| buf[(x, 0)].symbol() == "~").unwrap();
-    assert_ne!(buf[(tilde, 0)].fg, Theme::LIGHT.accent);
+    assert_ne!(buf[(tilde, 0)].fg, Theme::ANSI.accent);
     let all: String = (0..8)
         .map(|y| row_text(&buf, y, 40))
         .collect::<Vec<_>>()
@@ -2745,7 +2744,7 @@ fn tilde_query_does_not_match_home_abbreviation() {
 }
 
 fn tinted_folded_header_rows(buf: &Buffer, h: u16, w: u16) -> Vec<u16> {
-    let bg_alt = Theme::LIGHT.bg_alt;
+    let bg_alt = Theme::ANSI.bg_alt;
     (0..h)
         .filter(|&y| {
             row_text(buf, y, w).contains('\u{25b8}') && buf[(0, y)].bg == bg_alt

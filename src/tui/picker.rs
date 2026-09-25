@@ -1,5 +1,6 @@
 use crate::{
     config::SessionCandidate,
+    theme::Theme,
     tui::{
         git::CandidateState,
         selection::{Intent, Selection},
@@ -14,7 +15,6 @@ use ratatui::crossterm::event::{
     KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
 };
 use std::collections::HashSet;
-use terminal_colorsaurus::ThemeMode;
 
 /// Project-target picker workflow: session-candidate catalog,
 /// query, layout, and focus live here. The TUI and tests drive
@@ -37,12 +37,9 @@ pub(crate) struct Picker {
 }
 
 impl Picker {
-    pub(crate) fn new(
-        candidates: &[SessionCandidate],
-        theme_mode: ThemeMode,
-    ) -> Self {
+    pub(crate) fn new(candidates: &[SessionCandidate], theme: Theme) -> Self {
         let paths = SessionCandidate::paths(candidates);
-        let mut list = SessionsListState::new(theme_mode);
+        let mut list = SessionsListState::new(theme);
         list.groups = candidates
             .iter()
             .map(|c| (c.path.clone(), c.group.clone()))
