@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.svg" width="120" height="120" alt="contx logo">
+</p>
+
 # contx
 
 `contx` is a terminal picker and noninteractive CLI for project directories. It lists **session candidates** from your config, lets you fuzzy-search them with Git context, and activates the matching **project target**: a tmux **session** or a Herdr **workspace**. It can also clone a Git source, create a linked Git worktree, create an empty directory in the picker, and delete an existing session candidate. For agent workflows, see [SKILL.md](SKILL.md).
