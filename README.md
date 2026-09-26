@@ -10,6 +10,8 @@
 
 <p align="center">
   <a href="https://github.com/vieitesss/contx/releases/latest"><img src="https://img.shields.io/github/v/release/vieitesss/contx?style=flat-square&amp;color=89b4fa" alt="Latest release" /></a>
+  <a href="https://github.com/vieitesss/contx/actions/workflows/test.yaml"><img src="https://img.shields.io/github/actions/workflow/status/vieitesss/contx/test.yaml?branch=main&amp;style=flat-square&amp;label=tests" alt="Tests" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/vieitesss/contx?style=flat-square&amp;color=a6e3a1" alt="License" /></a>
   <a href="Cargo.toml"><img src="https://img.shields.io/badge/Rust%20edition-2024-89b4fa?style=flat-square&amp;logo=rust" alt="Rust edition 2024" /></a>
   <a href="#features"><img src="https://img.shields.io/badge/tmux%20%7C%20herdr-multiplexer-a6e3a1?style=flat-square" alt="tmux and Herdr multiplexer" /></a>
   <a href="https://github.com/vieitesss/contx/commits/main"><img src="https://img.shields.io/github/last-commit/vieitesss/contx?style=flat-square" alt="Last commit" /></a>
