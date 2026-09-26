@@ -242,7 +242,7 @@ dependencies = [
 
 [[package]]
 name = "contx"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "env_logger",
  "log",
