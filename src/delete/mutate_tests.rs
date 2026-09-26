@@ -735,6 +735,54 @@ fn git_worktree_remove_without_force() {
 }
 
 #[test]
+fn force_removes_clean_worktree_with_pane_cwd_inside() {
+    let d = TempDir::new();
+    let main = d.child("main");
+    init_repo(&main);
+    git_in(&main, &["branch", "side"]);
+    let linked = d.path().join("linked");
+    git_in(
+        &main,
+        &["worktree", "add", linked.to_str().unwrap(), "side"],
+    );
+    let config = cfg(vec![cand(&linked)]);
+    let pane_cwd = linked.join("src");
+    fs::create_dir(&pane_cwd).unwrap();
+    let mut trash = FakeTrash::ok();
+    let mut confirm = ScriptConfirm::noninteractive();
+    let mut out = Vec::new();
+    let mut err = Vec::new();
+
+    let outcome = run_with(
+        &config,
+        &req(linked.to_str().unwrap(), false, false, true),
+        d.path(),
+        d.path(),
+        &|_| None,
+        PaneCwdOutcome::Listed(vec![pane_cwd.display().to_string()]),
+        &mut SkipFetch,
+        &mut trash,
+        &mut LocalWorktree,
+        &mut confirm,
+        &mut out,
+        &mut err,
+    )
+    .unwrap();
+
+    assert!(matches!(
+        outcome,
+        DeleteOutcome::Deleted {
+            strategy: DeleteStrategy::GitWorktree,
+            ..
+        }
+    ));
+    assert!(!linked.exists());
+    assert!(main.exists());
+    assert_eq!(confirm.worktree_calls, 0);
+    assert!(trash.calls.is_empty());
+}
+
+#[test]
 fn confirm_prompts_name_the_chosen_strategy() {
     let trash = trash_confirm_prompt("/tmp/proj");
     assert!(trash.contains("trash"));

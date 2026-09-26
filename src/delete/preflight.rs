@@ -33,6 +33,7 @@ pub enum Warning {
     TrackedByEnclosingRepo { root: String },
     NestedRepositories { paths: Vec<String> },
     NoRemotes,
+    ActivePaneCwd,
 }
 
 /// Hard blockers. `--force` cannot bypass these.
@@ -43,7 +44,6 @@ pub enum Blocker {
     Disappeared,
     IdentityChanged,
     ActiveProcessCwd,
-    ActivePaneCwd,
     PaneListFailed,
     PrimaryHasLinkedWorktrees,
     FetchFailed,
@@ -99,6 +99,9 @@ impl fmt::Display for Warning {
                 write!(f, "nested repositories: {}", paths.join(", "))
             }
             Self::NoRemotes => write!(f, "no remotes"),
+            Self::ActivePaneCwd => {
+                write!(f, "pane working directory is inside the target")
+            }
         }
     }
 }
@@ -111,9 +114,6 @@ impl fmt::Display for Blocker {
             Self::IdentityChanged => write!(f, "path identity or type changed"),
             Self::ActiveProcessCwd => {
                 write!(f, "contx is running inside the target")
-            }
-            Self::ActivePaneCwd => {
-                write!(f, "a visible pane is inside the target")
             }
             Self::PaneListFailed => {
                 write!(f, "could not list multiplexer pane working directories")
@@ -300,7 +300,7 @@ pub(crate) fn preflight(
                 .iter()
                 .any(|c| path_is_at_or_under(Path::new(c), &target.path))
             {
-                blockers.push(Blocker::ActivePaneCwd);
+                warnings.push(Warning::ActivePaneCwd);
             }
         }
     }

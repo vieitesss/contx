@@ -204,12 +204,12 @@ fn process_cwd_under_target_blocks_sibling_does_not() {
 }
 
 #[test]
-fn pane_cwd_under_target_blocks_and_list_failure_blocks() {
+fn pane_cwd_under_target_warns_and_list_failure_blocks() {
     let d = TempDir::new();
     let target = d.child("proj");
     let inside = d.child("proj/src");
     let mut fetch = no_fetch();
-    let blocked = run(
+    let report = run(
         &target,
         &[cand(&target)],
         d.path(),
@@ -219,7 +219,12 @@ fn pane_cwd_under_target_blocks_and_list_failure_blocks() {
         true,
         &mut fetch,
     );
-    assert!(blocked.blockers.contains(&Blocker::ActivePaneCwd));
+    assert!(!report.is_blocked(), "{report}");
+    assert!(report.warnings.contains(&Warning::ActivePaneCwd));
+    assert!(
+        format!("{report}")
+            .contains("pane working directory is inside the target")
+    );
 
     let failed = run(
         &target,

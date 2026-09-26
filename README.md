@@ -103,7 +103,7 @@ contx --json --multiplexer herdr open /absolute/path/to/new-worktree
 
 `worktree create` takes an existing repository-root candidate, a **local** branch, and a new destination. Without `--new-branch` the branch must already exist; with it, the branch must not exist and is created from the selected repo's HEAD. Git creates the linked checkout using `git worktree add` (non-force); creation alone does not focus a workspace. Destinations, including clone destinations, must not already exist. Relative destinations resolve against the process cwd. `--add-parent` explicitly adds an uncovered destination parent to the config **after** successful creation so the new checkout is discoverable by `list`, `open`, and `delete`. Without it, noninteractive creation leaves config unchanged; JSON outcomes report `discoverable` and `config_updated`. A Git success followed by a config write failure leaves the created directory in place and reports its path. A failed/interrupted Git operation also leaves any surviving destination untouched.
 
-For deletion, `contx --json delete --dry-run <path>` returns a `preflight` object with `target` (including class and strategy), `warnings`, `blockers`, and `remote_verification`. Inspect it before considering `contx --json delete --force <path>`: `--force` accepts warnings but never bypasses hard blockers or opts into permanent deletion. JSON deletion without `--force` returns a confirmation-required error instead of prompting. Only a standalone-repo live delete fetches remotes; dry-run never does. Do not run from inside a target being deleted; active project panes can block it.
+For deletion, `contx --json delete --dry-run <path>` returns a `preflight` object with `target` (including class and strategy), `warnings`, `blockers`, and `remote_verification`. Inspect it before considering `contx --json delete --force <path>`: `--force` accepts warnings but never bypasses hard blockers or opts into permanent deletion. JSON deletion without `--force` returns a confirmation-required error instead of prompting. Only a standalone-repo live delete fetches remotes; dry-run never does. Do not run contx from inside a target being deleted; its own working directory remains a hard blocker. Pane working directories inside the target are warnings that `--force` accepts.
 
 ## Picker
 
@@ -167,7 +167,7 @@ Default strategy is the OS trash (`permanent-delete = false`). `--permanent` or 
 
 The picker has no `--dry-run`, `--permanent`, or `--force`. It uses the config strategy and interactive confirmations, including a separate permanent ask if trash fails.
 
-Preflight splits **overridable warnings** (nonempty ordinary directory, local Git dirtiness or unique data, nested repositories, and similar) from **hard blockers** (not a candidate; disappeared or changed path; process or pane sitting in the target; failed pane list while the multiplexer is live; primary checkout with linked worktrees; failed or cancelled fetch; unavailable trash; Git refusing worktree deletion). Accepting warnings never bypasses a blocker. `--force` does not either.
+Preflight splits **overridable warnings** (nonempty ordinary directory, local Git dirtiness or unique data, nested repositories, pane working directories inside the target, and similar) from **hard blockers** (not a candidate; disappeared or changed path; contx's own working directory inside the target; failed pane list while the multiplexer is live; primary checkout with linked worktrees; failed or cancelled fetch; unavailable trash; Git refusing worktree deletion). Accepting warnings never bypasses a blocker. `--force` does not either.
 
 Standalone repositories run `git fetch --all --prune` (inherited stdio) before deletion unless there are no remotes (warn and skip) or this is a dry-run.
 
@@ -175,7 +175,7 @@ Confirmations run after preflight unless `--force`: trash and linked-worktree de
 
 If trash fails, an interactive session asks separately for permanent deletion. A noninteractive session fails unless permanent deletion was already the selected strategy. `--force` alone does not fall back to permanent deletion.
 
-Active-path checks use the process working directory and pane working directories from **this invocation’s selected multiplexer only**. Outside a multiplexer, panes are skipped and the process working directory is still checked.
+Active-path checks use the process working directory and pane working directories from **this invocation’s selected multiplexer only**. A pane working directory inside the target is an overridable warning; contx's own working directory inside the target remains a hard blocker. Outside a multiplexer, panes are skipped and the process working directory is still checked.
 
 ## Activation
 
