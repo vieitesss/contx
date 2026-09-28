@@ -86,7 +86,7 @@ fn has_call(session: &str) -> Vec<String> {
     vec![
         "has-session".to_string(),
         "-t".to_string(),
-        session.to_string(),
+        format!("={session}"),
     ]
 }
 
@@ -94,7 +94,7 @@ fn switch_call(session: &str) -> Vec<String> {
     vec![
         "switch-client".to_string(),
         "-t".to_string(),
-        session.to_string(),
+        format!("={session}"),
     ]
 }
 
@@ -120,6 +120,30 @@ fn refuses_to_run_outside_tmux() {
         assert!(matches!(res, Err(ActivationError::NotInTmux)));
         assert!(runner.calls.is_empty());
     }
+}
+
+#[test]
+fn prefix_collision_creates_and_switches_to_exact_session() {
+    let candidate = "/home/tester/work/firestartr-pro/docs";
+    let session = "firestartr-pro_docs";
+    let mut runner = ScriptRunner::new(vec![
+        absent("can't find session: firestartr-pro_docs"),
+        succeeded(),
+        succeeded(),
+    ]);
+    let env = inside_env();
+
+    let res = open_with(candidate, &mut runner, &env);
+
+    assert_eq!(res.unwrap().session, session);
+    assert_eq!(
+        runner.calls,
+        [
+            has_call(session),
+            create_call(session, candidate),
+            switch_call(session),
+        ]
+    );
 }
 
 #[test]

@@ -89,7 +89,8 @@ fn is_tmux_process(env: &dyn Fn(&str) -> Option<OsString>) -> bool {
 }
 
 fn has_session(runner: &mut dyn CommandRunner, session: &str) -> CommandResult {
-    classify(runner.run(&["has-session", "-t", session]))
+    let target = format!("={session}");
+    classify(runner.run(&["has-session", "-t", &target]))
 }
 
 fn new_session(
@@ -104,7 +105,8 @@ fn switch_client(
     runner: &mut dyn CommandRunner,
     session: &str,
 ) -> CommandResult {
-    classify(runner.run(&["switch-client", "-t", session]))
+    let target = format!("={session}");
+    classify(runner.run(&["switch-client", "-t", &target]))
 }
 
 /// Activate the tmux session for the selected session candidate, deriving
